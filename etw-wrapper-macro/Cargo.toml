@@ -1,0 +1,24 @@
+[package]
+name = "etw-wrapper-macro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Procedural macros for etw-wrapper"
+documentation = "https://docs.rs/etw-wrapper-macro"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+anyhow = { workspace = true }
+syn = { workspace = true }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
+serde = { workspace = true }
+serde-xml-rs = { workspace = true }
+convert_case = { workspace = true }
+unicode-ident = { workspace = true }

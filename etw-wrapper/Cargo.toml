@@ -1,0 +1,24 @@
+[package]
+name = "etw-wrapper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Strongly typed Event Tracing for Windows (ETW) logger generation"
+documentation = "https://docs.rs/etw-wrapper"
+
+[dependencies]
+etw-wrapper-macro = { version = "0.1", optional = true, path = "../etw-wrapper-macro" }
+windows = { workspace = true }
+safe-sid = { workspace = true }
+
+[features]
+default = ["macro"]
+macro = ["dep:etw-wrapper-macro"]
+
+[dev-dependencies]
+windows = { workspace = true }
+

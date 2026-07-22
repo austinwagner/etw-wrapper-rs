@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Microsoft's sample manifest -->
+<instrumentationManifest
+    xmlns="http://schemas.microsoft.com/win/2004/08/events"
+    xmlns:win="http://manifests.microsoft.com/win/2004/08/windows/events"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <instrumentation>
+    <events>
+      <provider
+          name="Contoso-WidgetService"
+          guid="{8B3A1F42-6C7D-4E9A-9F21-3D5E0A7C1B84}"
+          symbol="PROVIDER_WIDGETSERVICE"
+          resourceFileName="C:\Program Files\Contoso\WidgetService.exe"
+          messageFileName="C:\Program Files\Contoso\WidgetService.exe">
+
+        <channels>
+          <channel
+              name="Contoso-WidgetService/Admin"
+              chid="AdminChannel"
+              symbol="CHANNEL_ADMIN"
+              type="Admin"
+              enabled="true"
+              message="$(string.Channel.Admin)"/>
+          <channel
+              name="Contoso-WidgetService/Operational"
+              chid="OperationalChannel"
+              symbol="CHANNEL_OPERATIONAL"
+              type="Operational"
+              enabled="true"
+              message="$(string.Channel.Operational)"/>
+        </channels>
+
+        <templates>
+          <template tid="T_ServiceStarted">
+            <data name="Version"     inType="win:UnicodeString" outType="xs:string"/>
+            <data name="WorkerCount" inType="win:UInt32"        outType="xs:unsignedInt"/>
+            <data name="StartTime"   inType="win:FILETIME"      outType="xs:dateTime"/>
+          </template>
+
+          <template tid="T_RequestFailed">
+            <data name="RequestId"   inType="win:UInt64"        outType="win:HexInt64"/>
+            <data name="StatusCode"  inType="win:UInt32"        outType="xs:unsignedInt"/>
+            <data name="ElapsedMs"   inType="win:UInt32"        outType="xs:unsignedInt"/>
+            <data name="Detail"      inType="win:UnicodeString" outType="xs:string"/>
+          </template>
+        </templates>
+
+        <events>
+          <event
+              value="1"
+              symbol="SERVICE_STARTED"
+              version="0"
+              channel="OperationalChannel"
+              level="win:Informational"
+              template="T_ServiceStarted"
+              message="$(string.Event.ServiceStarted)"/>
+
+          <event
+              value="2"
+              symbol="REQUEST_FAILED"
+              version="0"
+              channel="AdminChannel"
+              level="win:Error"
+              template="T_RequestFailed"
+              message="$(string.Event.RequestFailed)"/>
+        </events>
+
+      </provider>
+    </events>
+  </instrumentation>
+
+  <localization>
+    <resources culture="en-US">
+      <stringTable>
+        <string id="Channel.Admin"
+                value="Contoso WidgetService Admin"/>
+        <string id="Channel.Operational"
+                value="Contoso WidgetService Operational"/>
+        <string id="Event.ServiceStarted"
+                value="WidgetService %1 started with %2 workers at %3."/>
+        <string id="Event.RequestFailed"
+                value="Request %1 failed with status %2 after %3 ms. %4"/>
+      </stringTable>
+    </resources>
+  </localization>
+</instrumentationManifest>
