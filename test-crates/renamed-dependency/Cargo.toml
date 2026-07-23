@@ -1,0 +1,8 @@
+[package]
+name = "renamed-dependency"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+etw = { package = "etw-wrapper", path = "../../etw-wrapper" }

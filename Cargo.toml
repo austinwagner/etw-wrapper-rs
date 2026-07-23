@@ -1,0 +1,34 @@
+[workspace]
+resolver = "3"
+members = [
+    "etw-wrapper",
+    "etw-wrapper-macro",
+    "test-crates/renamed-dependency",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "ISC"
+readme = "README.md"
+repository = "https://github.com/austinwagner/etw-wrapper-rs"
+keywords = ["etw", "windows", "tracing", "logging"]
+categories = ["os::windows-apis", "api-bindings"]
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde-xml-rs = "0.8"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Etw",
+    "Win32_Security"
+] }
+syn = { version = "3", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+proc-macro-crate = "3"
+convert_case = "0.11"
+unicode-ident = "1"
+safe-sid = "0.1"
+

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<instrumentationManifest
+  xmlns="http://schemas.microsoft.com/win/2004/08/events"
+  xmlns:win="http://manifests.microsoft.com/win/2004/08/windows/events">
+  <instrumentation>
+    <events>
+      <provider
+        name="Renamed.Dependency.Provider"
+        guid="{E87F1505-7060-459E-8D7A-E3D1E0712801}"
+        symbol="RENAMED_PROVIDER">
+        <events>
+          <event value="1" symbol="PING"/>
+        </events>
+      </provider>
+    </events>
+  </instrumentation>
+</instrumentationManifest>

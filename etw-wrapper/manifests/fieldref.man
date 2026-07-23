@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<instrumentationManifest
+    xmlns="http://schemas.microsoft.com/win/2004/08/events"
+    xmlns:win="http://manifests.microsoft.com/win/2004/08/windows/events"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <instrumentation>
+    <events>
+      <provider
+          name="Contoso-FieldRef"
+          guid="{2E3D4C5B-6A7F-4819-92A3-B4C5D6E7F809}"
+          symbol="PROVIDER_FIELDREF"
+          resourceFileName="C:\FieldRef.exe"
+          messageFileName="C:\FieldRef.exe">
+
+        <templates>
+          <!-- `Blob` is a variable-length binary whose byte count is carried by the
+               preceding `BlobSize` field. The generated method exposes only `blob`;
+               `BlobSize` is derived from its length. -->
+          <template tid="T_Blob">
+            <data name="BlobSize" inType="win:UInt32"/>
+            <data name="Blob"     inType="win:Binary" length="BlobSize"/>
+          </template>
+
+          <!-- Fixed-length Unicode string: 8 code units including the terminator. -->
+          <template tid="T_Named">
+            <data name="Name" inType="win:UnicodeString" length="8"/>
+          </template>
+
+          <!-- Fixed-length ANSI string: 8 bytes including the terminator. -->
+          <template tid="T_AnsiNamed">
+            <data name="Name" inType="win:AnsiString" length="8"/>
+          </template>
+
+          <!-- Explicit UTF-8 output permits a Rust &str API. -->
+          <template tid="T_Utf8Named">
+            <data name="Name" inType="win:AnsiString" outType="win:Utf8" length="8"/>
+          </template>
+        </templates>
+
+        <events>
+          <event value="1" symbol="BLOB_WRITTEN" version="0" template="T_Blob"/>
+          <event value="2" symbol="NAMED"        version="0" template="T_Named"/>
+          <event value="3" symbol="ANSI_NAMED"   version="0" template="T_AnsiNamed"/>
+          <event value="4" symbol="UTF8_NAMED"   version="0" template="T_Utf8Named"/>
+        </events>
+
+      </provider>
+    </events>
+  </instrumentation>
+</instrumentationManifest>

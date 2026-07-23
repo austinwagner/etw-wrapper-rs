@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<instrumentationManifest
+    xmlns="http://schemas.microsoft.com/win/2004/08/events"
+    xmlns:win="http://manifests.microsoft.com/win/2004/08/windows/events"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <instrumentation>
+    <events>
+      <provider
+          name="Contoso-AllTypes"
+          guid="{1D2C3B4A-5E6F-4708-8192-A3B4C5D6E7F8}"
+          symbol="PROVIDER_ALL_TYPES"
+          resourceFileName="C:\AllTypes.exe"
+          messageFileName="C:\AllTypes.exe">
+
+        <templates>
+          <template tid="T_AllTypes">
+            <data name="Int8"       inType="win:Int8"/>
+            <data name="UInt8"      inType="win:UInt8"/>
+            <data name="Int16"      inType="win:Int16"/>
+            <data name="UInt16"     inType="win:UInt16"/>
+            <data name="Int32"      inType="win:Int32"/>
+            <data name="UInt32"     inType="win:UInt32"/>
+            <data name="HexInt32"   inType="win:HexInt32"/>
+            <data name="Int64"      inType="win:Int64"/>
+            <data name="UInt64"     inType="win:UInt64"/>
+            <data name="HexInt64"   inType="win:HexInt64"/>
+            <data name="Float"      inType="win:Float"/>
+            <data name="Double"     inType="win:Double"/>
+            <data name="Pointer"    inType="win:Pointer"/>
+            <data name="Guid"       inType="win:GUID"/>
+            <data name="Boolean"    inType="win:Boolean"/>
+            <data name="Unicode"    inType="win:UnicodeString"/>
+            <data name="Ansi"       inType="win:AnsiString"/>
+            <data name="Binary"     inType="win:Binary" length="16"/>
+            <data name="FileTime"   inType="win:FILETIME"/>
+            <data name="SystemTime" inType="win:SYSTEMTIME"/>
+            <data name="Sid"        inType="win:SID"/>
+          </template>
+        </templates>
+
+        <events>
+          <event value="1" symbol="ALL_TYPES" version="0" template="T_AllTypes"/>
+        </events>
+
+      </provider>
+    </events>
+  </instrumentation>
+</instrumentationManifest>
