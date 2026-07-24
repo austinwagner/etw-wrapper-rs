@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<instrumentationManifest
+    xmlns="http://schemas.microsoft.com/win/2004/08/events"
+    xmlns:win="http://manifests.microsoft.com/win/2004/08/windows/events">
+  <instrumentation>
+    <events>
+      <provider
+          name="Contoso-Hex"
+          guid="{11111111-2222-3333-4444-555555555555}"
+          symbol="PROVIDER_HEX"
+          resourceFileName="C:\Hex.exe"
+          messageFileName="C:\Hex.exe">
+        <events>
+          <event value="0x10" version="0x2" symbol="HEX_EVENT"/>
+        </events>
+      </provider>
+    </events>
+  </instrumentation>
+</instrumentationManifest>

@@ -152,17 +152,15 @@ fn resolve_event(
     lookups: &ProviderLookupTables,
     strings: &HashMap<String, String>,
 ) -> Result<Event> {
-    let id: u16 = ev
-        .value
-        .parse()
-        .with_context(|| format!("event value {:?} is not a u16", ev.value))?;
+    let id: u16 =
+        parse_int(&ev.value).with_context(|| format!("event value {:?} is not a u16", ev.value))?;
 
     let symbol = ev.symbol.clone().unwrap_or_else(|| format!("Event{id}"));
 
     let version: u8 = match &ev.version {
-        Some(v) => v
-            .parse()
-            .with_context(|| format!("event {symbol} version {v:?} is not a u8"))?,
+        Some(v) => {
+            parse_int(v).with_context(|| format!("event {symbol} version {v:?} is not a u8"))?
+        }
         None => 0,
     };
 
@@ -539,6 +537,35 @@ mod tests {
     fn parses_guid_from_string() {
         let g = parse_guid("{8B3A1F42-6C7D-4E9A-9F21-3D5E0A7C1B84}").unwrap();
         assert_eq!(g, 0x8B3A1F42_6C7D_4E9A_9F21_3D5E0A7C1B84);
+    }
+
+    #[test]
+    fn resolves_hex_event_value_and_version() {
+        let xml = r#"
+            <instrumentationManifest
+                xmlns="http://schemas.microsoft.com/win/2004/08/events"
+                xmlns:win="http://manifests.microsoft.com/win/2004/08/windows/events">
+              <instrumentation>
+                <events>
+                  <provider
+                      name="Contoso-Hex"
+                      guid="{11111111-2222-3333-4444-555555555555}"
+                      symbol="PROVIDER_HEX">
+                    <events>
+                      <event value="0x10" version="0x2" symbol="HEX_EVENT"/>
+                    </events>
+                  </provider>
+                </events>
+              </instrumentation>
+            </instrumentationManifest>
+        "#;
+        let manifest: InstrumentationManifest = serde_xml_rs::from_str(xml).unwrap();
+
+        let resolved = resolve(&manifest).unwrap();
+        let event = &resolved.providers[0].events[0];
+
+        assert_eq!(event.id, 0x10);
+        assert_eq!(event.version, 0x2);
     }
 
     #[test]
