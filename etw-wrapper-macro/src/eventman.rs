@@ -175,6 +175,8 @@ pub struct DataType {
     pub out_type: Option<String>,
     #[serde(default, rename = "@length")]
     pub length: Option<String>,
+    #[serde(default, rename = "@count")]
+    pub count: Option<String>,
 }
 
 #[derive(Deserialize)]

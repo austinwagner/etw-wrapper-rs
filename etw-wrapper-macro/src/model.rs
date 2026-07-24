@@ -402,6 +402,13 @@ pub enum Length {
     FieldRef(String),
 }
 
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+pub enum Count {
+    Single,
+    Constant(u16),
+    FieldRef(String),
+}
+
 #[derive(Debug, Eq, PartialEq, Clone, Copy, Hash)]
 pub enum AnsiEncoding {
     /// The provider's ANSI code page, used by the default `xs:string` output type.
@@ -439,6 +446,7 @@ pub enum WinType {
 pub struct TypeInfo {
     pub name: String,
     pub win_type: WinType,
+    pub count: Count,
 }
 
 pub fn template_data_to_types(data: &[DataType]) -> anyhow::Result<Vec<TypeInfo>> {
@@ -449,6 +457,20 @@ pub fn template_data_to_types(data: &[DataType]) -> anyhow::Result<Vec<TypeInfo>
                 Ok(x) => Length::Constant(x),
                 Err(_) => Length::FieldRef(x.to_owned()),
             },
+        }
+    }
+
+    fn count_from_string(s: &Option<String>) -> anyhow::Result<Count> {
+        match s {
+            None => Ok(Count::Single),
+            Some(raw) if raw.trim().bytes().all(|b| b.is_ascii_digit()) => {
+                let value = raw.trim();
+                let count = value
+                    .parse::<u16>()
+                    .with_context(|| format!("array count {raw:?} is not a u16"))?;
+                Ok(Count::Constant(count))
+            }
+            Some(x) => Ok(Count::FieldRef(x.trim().to_owned())),
         }
     }
 
@@ -494,6 +516,7 @@ pub fn template_data_to_types(data: &[DataType]) -> anyhow::Result<Vec<TypeInfo>
             Ok(TypeInfo {
                 name: d.name.clone(),
                 win_type,
+                count: count_from_string(&d.count).with_context(|| format!("field {}", d.name))?,
             })
         })
         .collect()
@@ -634,6 +657,7 @@ mod tests {
             in_type: "win:AnsiString".into(),
             out_type: out_type.map(str::to_owned),
             length: None,
+            count: None,
         };
 
         let default = template_data_to_types(&[field(None)]).unwrap();
@@ -658,8 +682,48 @@ mod tests {
             in_type: "win:AnsiString".into(),
             out_type: Some("win:HexInt32".into()),
             length: None,
+            count: None,
         };
 
         assert!(template_data_to_types(&[field]).is_err());
+    }
+
+    #[test]
+    fn resolves_fixed_and_field_reference_array_counts() {
+        let field = |name: &str, count: Option<&str>| DataType {
+            name: name.into(),
+            in_type: "win:UInt32".into(),
+            out_type: None,
+            length: None,
+            count: count.map(str::to_owned),
+        };
+
+        let resolved = template_data_to_types(&[
+            field("Single", None),
+            field("Fixed", Some("3")),
+            field("Variable", Some("ElementCount")),
+        ])
+        .unwrap();
+
+        assert_eq!(resolved[0].count, Count::Single);
+        assert_eq!(resolved[1].count, Count::Constant(3));
+        assert_eq!(resolved[2].count, Count::FieldRef("ElementCount".into()));
+    }
+
+    #[test]
+    fn rejects_out_of_range_fixed_array_count() {
+        let field = DataType {
+            name: "Values".into(),
+            in_type: "win:UInt32".into(),
+            out_type: None,
+            length: None,
+            count: Some("65536".into()),
+        };
+
+        let err = template_data_to_types(&[field]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("array count \"65536\" is not a u16"),
+            "{err:#}"
+        );
     }
 }

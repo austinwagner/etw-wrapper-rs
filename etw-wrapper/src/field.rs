@@ -39,6 +39,13 @@ pub fn scalar<T: Copy>(v: &T) -> EventDataDescriptor<'_> {
     unsafe { EventDataDescriptor::new(v as *const T as u64, size_of::<T>() as u32) }
 }
 
+/// Creates a descriptor over a contiguous slice of `Copy` values.
+#[inline]
+pub fn slice<T: Copy>(values: &[T]) -> EventDataDescriptor<'_> {
+    // SAFETY: the descriptor borrows `values`, which remains readable for the returned lifetime.
+    unsafe { EventDataDescriptor::new(values.as_ptr() as u64, size_of_val(values) as u32) }
+}
+
 /// Creates a descriptor over an ANSI string (win:AnsiString).
 ///
 /// # Panics
@@ -69,6 +76,39 @@ pub fn checked_len<T: TryFrom<usize>>(len: usize) -> crate::Result<T> {
             .to_hresult()
             .into()
     })
+}
+
+/// Returns the common length of a collection of byte slices.
+///
+/// Generated array wrappers use this for `win:Binary` fields that combine `count="..."` with a
+/// referenced `length="..."`. An empty collection has an element length of zero.
+#[doc(hidden)]
+#[inline]
+pub fn uniform_len<T: AsRef<[u8]>>(values: &[T]) -> crate::Result<usize> {
+    let Some(first) = values.first() else {
+        return Ok(0);
+    };
+    let len = first.as_ref().len();
+    if values.iter().all(|value| value.as_ref().len() == len) {
+        Ok(len)
+    } else {
+        Err(windows::Win32::Foundation::ERROR_INVALID_DATA
+            .to_hresult()
+            .into())
+    }
+}
+
+/// Validates that an encoded value has the length declared by another manifest field.
+#[doc(hidden)]
+#[inline]
+pub fn ensure_len(actual: usize, expected: usize) -> crate::Result<()> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(windows::Win32::Foundation::ERROR_INVALID_DATA
+            .to_hresult()
+            .into())
+    }
 }
 
 /// Creates a descriptor over a UTF-16 buffer (win:UnicodeString).
@@ -273,5 +313,34 @@ mod tests {
     #[should_panic(expected = "len must include space for the NUL terminator")]
     fn to_cstring_fixed_len_rejects_zero_length() {
         to_cstring_fixed_len("", 0);
+    }
+
+    #[test]
+    fn slice_uses_the_full_contiguous_size() {
+        let values = [1u32, 2, 3];
+        let descriptor = slice(&values);
+        assert_eq!(descriptor.inner.Size, 3 * size_of::<u32>() as u32);
+        assert_eq!(descriptor.inner.Ptr, values.as_ptr() as u64);
+    }
+
+    #[test]
+    fn uniform_len_accepts_empty_and_equal_slices() {
+        let empty: [&[u8]; 0] = [];
+        assert_eq!(uniform_len(&empty).unwrap(), 0);
+        assert_eq!(
+            uniform_len(&[b"abc".as_slice(), b"def".as_slice()]).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn uniform_len_rejects_mixed_lengths() {
+        assert!(uniform_len(&[b"a".as_slice(), b"bc".as_slice()]).is_err());
+    }
+
+    #[test]
+    fn ensure_len_rejects_mismatches() {
+        assert!(ensure_len(3, 3).is_ok());
+        assert!(ensure_len(2, 3).is_err());
     }
 }

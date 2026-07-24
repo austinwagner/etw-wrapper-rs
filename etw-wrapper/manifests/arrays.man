@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<instrumentationManifest
+    xmlns="http://schemas.microsoft.com/win/2004/08/events"
+    xmlns:win="http://manifests.microsoft.com/win/2004/08/windows/events"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <instrumentation>
+    <events>
+      <provider
+          name="Contoso-Arrays"
+          guid="{3F4E5D6C-7B8A-4920-A3B4-C5D6E7F8091A}"
+          symbol="PROVIDER_ARRAYS"
+          resourceFileName="C:\Arrays.exe"
+          messageFileName="C:\Arrays.exe">
+
+        <templates>
+          <template tid="T_FixedScalars">
+            <data name="Int8s"       inType="win:Int8" count="2"/>
+            <data name="UInt8s"      inType="win:UInt8" count="2"/>
+            <data name="Int16s"      inType="win:Int16" count="2"/>
+            <data name="UInt16s"     inType="win:UInt16" count="2"/>
+            <data name="Int32s"      inType="win:Int32" count="2"/>
+            <data name="UInt32s"     inType="win:UInt32" count="2"/>
+            <data name="HexInt32s"   inType="win:HexInt32" count="2"/>
+            <data name="Int64s"      inType="win:Int64" count="2"/>
+            <data name="UInt64s"     inType="win:UInt64" count="2"/>
+            <data name="HexInt64s"   inType="win:HexInt64" count="2"/>
+            <data name="Floats"      inType="win:Float" count="2"/>
+            <data name="Doubles"     inType="win:Double" count="2"/>
+            <data name="Pointers"    inType="win:Pointer" count="2"/>
+            <data name="Guids"       inType="win:GUID" count="2"/>
+            <data name="Booleans"    inType="win:Boolean" count="2"/>
+            <data name="FileTimes"   inType="win:FILETIME" count="2"/>
+            <data name="SystemTimes" inType="win:SYSTEMTIME" count="2"/>
+          </template>
+
+          <template tid="T_VariableScalars">
+            <data name="ValueCount" inType="win:UInt16"/>
+            <data name="Values"     inType="win:UInt32" count="ValueCount"/>
+          </template>
+
+          <template tid="T_SharedCount">
+            <data name="ValueCount" inType="win:UInt16"/>
+            <data name="Primary"    inType="win:UInt32" count="ValueCount"/>
+            <data name="Secondary"  inType="win:UInt16" count="ValueCount"/>
+          </template>
+
+          <template tid="T_Strings">
+            <data name="Names"           inType="win:UnicodeString" count="2"/>
+            <data name="FixedNames"      inType="win:UnicodeString" length="4" count="2"/>
+            <data name="AnsiNames"       inType="win:AnsiString" count="2"/>
+            <data name="FixedAnsiNames"  inType="win:AnsiString" length="4" count="2"/>
+            <data name="Utf8Names"       inType="win:AnsiString" outType="win:Utf8" count="2"/>
+            <data name="FixedUtf8Names"  inType="win:AnsiString" outType="win:Utf8"
+                  length="4" count="2"/>
+          </template>
+
+          <template tid="T_FixedBinary">
+            <data name="Blobs" inType="win:Binary" length="4" count="2"/>
+          </template>
+
+          <template tid="T_VariableLengthStrings">
+            <data name="ElementLength" inType="win:UInt16"/>
+            <data name="UnicodeCount"  inType="win:UInt16"/>
+            <data name="UnicodeNames"  inType="win:UnicodeString"
+                  length="ElementLength" count="UnicodeCount"/>
+            <data name="AnsiCount"     inType="win:UInt16"/>
+            <data name="AnsiNames"     inType="win:AnsiString"
+                  length="ElementLength" count="AnsiCount"/>
+            <data name="Utf8Count"     inType="win:UInt16"/>
+            <data name="Utf8Names"     inType="win:AnsiString" outType="win:Utf8"
+                  length="ElementLength" count="Utf8Count"/>
+          </template>
+
+          <template tid="T_VariableBinary">
+            <data name="ElementLength" inType="win:UInt16"/>
+            <data name="ElementCount"  inType="win:UInt16"/>
+            <data name="Blobs"         inType="win:Binary"
+                  length="ElementLength" count="ElementCount"/>
+          </template>
+
+          <template tid="T_Sids">
+            <data name="Sids" inType="win:SID" count="2"/>
+          </template>
+        </templates>
+
+        <events>
+          <event value="1" symbol="FIXED_SCALARS"    template="T_FixedScalars"/>
+          <event value="2" symbol="VARIABLE_SCALARS" template="T_VariableScalars"/>
+          <event value="3" symbol="SHARED_COUNT"     template="T_SharedCount"/>
+          <event value="4" symbol="STRINGS"          template="T_Strings"/>
+          <event value="5" symbol="FIXED_BINARY"     template="T_FixedBinary"/>
+          <event value="6" symbol="VARIABLE_LENGTH_STRINGS"
+                 template="T_VariableLengthStrings"/>
+          <event value="7" symbol="VARIABLE_BINARY"  template="T_VariableBinary"/>
+          <event value="8" symbol="SIDS"             template="T_Sids"/>
+        </events>
+
+      </provider>
+    </events>
+  </instrumentation>
+</instrumentationManifest>

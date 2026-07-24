@@ -18,7 +18,7 @@ mod model;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::model::{AnsiEncoding, Event, Length, Provider, WinType};
+use crate::model::{AnsiEncoding, Count, Event, Length, Provider, WinType};
 use convert_case::ccase;
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
@@ -192,7 +192,7 @@ fn gen_provider(
         let specs = ev
             .params
             .iter()
-            .map(|t| classify(&t.win_type, codegen))
+            .map(|t| classify(t, codegen))
             .collect::<Vec<_>>();
         let helper = backing_name(&specs);
         backing
@@ -247,25 +247,73 @@ struct FieldPlan {
     doc_ref: String,
 }
 
-/// How a field is surfaced, decided before identifiers are assigned.
+/// Whether a manifest field is emitted from a caller-provided value or derived from another field.
+#[derive(Clone)]
+enum FieldRole {
+    Value(ValuePlan),
+    Derived(DerivedPlan),
+}
+
+/// The independent dimensions needed to expose and serialize a caller-provided value.
 #[derive(Clone, Copy)]
-enum Kind {
-    /// Exposes the field as-is with its helper type.
-    Normal,
-    /// Exposes fixed-length `win:Binary length="N"` data as `&[u8; N]`.
-    FixedBinary(usize),
-    /// Exposes `win:UnicodeString` data as `&str` and converts it to a UTF-16 buffer.
+struct ValuePlan {
+    kind: ValueKind,
+    cardinality: Cardinality,
+}
+
+#[derive(Clone, Copy)]
+enum ValueKind {
+    Scalar,
+    Boolean,
+    String {
+        encoding: StringEncoding,
+        length: ElementLength,
+    },
+    Binary {
+        length: ElementLength,
+    },
+    Sid,
+}
+
+#[derive(Clone, Copy)]
+enum StringEncoding {
     Unicode,
-    /// Exposes `win:UnicodeString length="N"` data as `&str`, encoded into exactly N UTF-16 units.
-    FixedLenUnicode(usize),
-    /// Exposes a provider-code-page `win:AnsiString length="N"` as exact encoded bytes.
-    FixedLenProviderAnsi(usize),
-    /// Exposes a UTF-8 `win:AnsiString` as `&str` and adds a NUL terminator.
-    Utf8Ansi,
-    /// Exposes a UTF-8 `win:AnsiString length="N"` as `&str`, encoded into exactly N bytes.
-    FixedLenUtf8Ansi(usize),
-    /// Hides a length field and derives it from the blob at index `from`.
-    DerivedLen { from: usize },
+    ProviderAnsi,
+    Utf8,
+}
+
+#[derive(Clone, Copy)]
+enum ElementLength {
+    Implicit,
+    Fixed(usize),
+    FieldRef(usize),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Cardinality {
+    Single,
+    Fixed(usize),
+    Dynamic,
+}
+
+impl Cardinality {
+    fn from_count(count: &Count) -> Self {
+        match count {
+            Count::Single => Self::Single,
+            Count::Constant(count) => Self::Fixed(*count as usize),
+            Count::FieldRef(_) => Self::Dynamic,
+        }
+    }
+
+    fn is_array(self) -> bool {
+        self != Self::Single
+    }
+}
+
+#[derive(Clone)]
+enum DerivedPlan {
+    BinaryLength { from: usize },
+    ArrayCount { from: Vec<usize> },
 }
 
 /// Returns whether a `WinType` is an integer type that a `win:Binary length="..."` reference may
@@ -277,8 +325,436 @@ fn is_length_int(w: &WinType) -> bool {
     )
 }
 
-/// Decides, for each field of an event, whether it is an exposed parameter, a fixed-length
-/// variant, or a length field derived from a later blob, validating `length="field"` refs.
+fn array_param_ty(element: TokenStream2, cardinality: Cardinality) -> anyhow::Result<TokenStream2> {
+    match cardinality {
+        Cardinality::Fixed(count) => {
+            let n = count;
+            Ok(quote!(&[#element; #n]))
+        }
+        Cardinality::Dynamic => Ok(quote!(&[#element])),
+        Cardinality::Single => anyhow::bail!("internal error: array parameter has no count"),
+    }
+}
+
+fn resolve_prior_length_field(
+    index_by_name: &HashMap<&str, usize>,
+    ev: &Event,
+    p: &Provider,
+    field_index: usize,
+    name: &str,
+    subject: &str,
+) -> anyhow::Result<usize> {
+    let field = &ev.params[field_index];
+    let index = *index_by_name.get(name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{subject} {} in event {} of provider {} references unknown length field {:?}",
+            field.name,
+            ev.symbol,
+            p.symbol,
+            name
+        )
+    })?;
+    if index >= field_index {
+        anyhow::bail!(
+            "{subject} {} in event {} of provider {} references length field {:?}, which must appear before it",
+            field.name,
+            ev.symbol,
+            p.symbol,
+            name
+        );
+    }
+    if !is_length_int(&ev.params[index].win_type) || ev.params[index].count != Count::Single {
+        anyhow::bail!(
+            "length field {:?} for {subject} {} in event {} of provider {} must be a scalar win:UInt8, win:UInt16, win:UInt32, or win:HexInt32",
+            name,
+            field.name,
+            ev.symbol,
+            p.symbol
+        );
+    }
+    Ok(index)
+}
+
+fn build_value_plan(
+    index_by_name: &HashMap<&str, usize>,
+    ev: &Event,
+    p: &Provider,
+    field_index: usize,
+) -> anyhow::Result<ValuePlan> {
+    let field = &ev.params[field_index];
+    let cardinality = Cardinality::from_count(&field.count);
+    let string_length = |length: &Length| -> anyhow::Result<ElementLength> {
+        match length {
+            Length::Implicit => Ok(ElementLength::Implicit),
+            Length::Constant(length) => Ok(ElementLength::Fixed(*length as usize)),
+            // Existing scalar-string behavior treats a referenced length as NUL-terminated. Arrays
+            // need the resolved field because each encoded element must have exactly that length.
+            Length::FieldRef(_) if cardinality == Cardinality::Single => {
+                Ok(ElementLength::Implicit)
+            }
+            Length::FieldRef(name) => Ok(ElementLength::FieldRef(resolve_prior_length_field(
+                index_by_name,
+                ev,
+                p,
+                field_index,
+                name,
+                "string array field",
+            )?)),
+        }
+    };
+
+    let kind = if scalar_frag(&field.win_type, false).is_some() {
+        ValueKind::Scalar
+    } else {
+        match &field.win_type {
+            WinType::Boolean => ValueKind::Boolean,
+            WinType::UnicodeString(length) => ValueKind::String {
+                encoding: StringEncoding::Unicode,
+                length: string_length(length)?,
+            },
+            WinType::AnsiString(length, encoding) => ValueKind::String {
+                encoding: match encoding {
+                    AnsiEncoding::ProviderAnsi => StringEncoding::ProviderAnsi,
+                    AnsiEncoding::Utf8 => StringEncoding::Utf8,
+                },
+                length: string_length(length)?,
+            },
+            WinType::Binary(length) => ValueKind::Binary {
+                length: match length {
+                    Length::Implicit if cardinality.is_array() => {
+                        anyhow::bail!(
+                            "binary array field {} in event {} of provider {} must declare a length",
+                            field.name,
+                            ev.symbol,
+                            p.symbol
+                        )
+                    }
+                    Length::Implicit => ElementLength::Implicit,
+                    Length::Constant(length) => ElementLength::Fixed(*length as usize),
+                    Length::FieldRef(name) => ElementLength::FieldRef(resolve_prior_length_field(
+                        index_by_name,
+                        ev,
+                        p,
+                        field_index,
+                        name,
+                        "binary field",
+                    )?),
+                },
+            },
+            WinType::Sid => ValueKind::Sid,
+            _ => unreachable!("all scalar types returned above"),
+        }
+    };
+
+    Ok(ValuePlan { kind, cardinality })
+}
+
+fn direct_field_plan(id: Ident, ty: TokenStream2) -> FieldPlan {
+    let doc_ref = id.to_string();
+    FieldPlan {
+        param: Some((id.clone(), ty)),
+        temp: None,
+        call: id,
+        doc_ref,
+    }
+}
+
+fn plan_string_value(
+    field_index: usize,
+    value: ValuePlan,
+    id: Ident,
+    idents: &[Ident],
+    specs: &[FieldSpec],
+    codegen: &CodegenContext,
+) -> anyhow::Result<FieldPlan> {
+    let runtime = &codegen.runtime;
+    let ValueKind::String { encoding, length } = value.kind else {
+        unreachable!("string planner requires a string value plan");
+    };
+
+    if value.cardinality == Cardinality::Single {
+        return Ok(match encoding {
+            StringEncoding::Unicode => {
+                let tmp = match length {
+                    ElementLength::Fixed(_) => format_ident!("__f{}", field_index),
+                    ElementLength::Implicit | ElementLength::FieldRef(_) => {
+                        format_ident!("__s{}", field_index)
+                    }
+                };
+                let encode = match length {
+                    ElementLength::Fixed(length) => {
+                        quote!(#runtime::field::to_u16cstring_fixed_len(#id, #length))
+                    }
+                    ElementLength::Implicit | ElementLength::FieldRef(_) => {
+                        quote!(#runtime::field::to_u16cstring(#id))
+                    }
+                };
+                let temp = quote! {
+                    let #tmp: &[u16] = &#encode;
+                };
+                let doc_ref = id.to_string();
+                FieldPlan {
+                    param: Some((id, quote!(&str))),
+                    temp: Some(temp),
+                    call: tmp,
+                    doc_ref,
+                }
+            }
+            StringEncoding::ProviderAnsi => match length {
+                ElementLength::Fixed(length) => direct_field_plan(id, quote!(&[u8; #length])),
+                ElementLength::Implicit | ElementLength::FieldRef(_) => {
+                    direct_field_plan(id, specs[field_index].rust_ty.clone())
+                }
+            },
+            StringEncoding::Utf8 => {
+                let tmp = match length {
+                    ElementLength::Fixed(_) => format_ident!("__af{}", field_index),
+                    ElementLength::Implicit | ElementLength::FieldRef(_) => {
+                        format_ident!("__a{}", field_index)
+                    }
+                };
+                let encode = match length {
+                    ElementLength::Fixed(length) => {
+                        quote!(#runtime::field::to_cstring_fixed_len(#id, #length))
+                    }
+                    ElementLength::Implicit | ElementLength::FieldRef(_) => {
+                        quote!(#runtime::field::to_cstring(#id))
+                    }
+                };
+                let temp = quote! {
+                    let #tmp: &[u8] = &#encode;
+                };
+                let doc_ref = id.to_string();
+                FieldPlan {
+                    param: Some((id, quote!(&str))),
+                    temp: Some(temp),
+                    call: tmp,
+                    doc_ref,
+                }
+            }
+        });
+    }
+
+    match encoding {
+        StringEncoding::Unicode => {
+            let ty = array_param_ty(quote!(&str), value.cardinality)?;
+            let storage = format_ident!("__ua{}_storage", field_index);
+            let tmp = format_ident!("__ua{}", field_index);
+            let encode = match length {
+                ElementLength::Implicit => quote!(#runtime::field::to_u16cstring(value)),
+                ElementLength::Fixed(length) => {
+                    quote!(#runtime::field::to_u16cstring_fixed_len(value, #length))
+                }
+                ElementLength::FieldRef(from) => {
+                    let length = &idents[from];
+                    quote!(#runtime::field::to_u16cstring_fixed_len(value, #length as usize))
+                }
+            };
+            let temp = quote! {
+                let mut #storage = ::std::vec::Vec::<u16>::new();
+                for value in #id {
+                    let encoded = #encode;
+                    #storage.extend_from_slice(&encoded);
+                }
+                let #tmp: &[u16] = &#storage;
+            };
+            let doc_ref = id.to_string();
+            Ok(FieldPlan {
+                param: Some((id, ty)),
+                temp: Some(temp),
+                call: tmp,
+                doc_ref,
+            })
+        }
+        StringEncoding::ProviderAnsi => {
+            let element_ty = match length {
+                ElementLength::Fixed(length) => quote!([u8; #length]),
+                ElementLength::Implicit | ElementLength::FieldRef(_) => quote!(&[u8]),
+            };
+            let ty = array_param_ty(element_ty, value.cardinality)?;
+            let storage = format_ident!("__aa{}_storage", field_index);
+            let tmp = format_ident!("__aa{}", field_index);
+            let validate_len = match length {
+                ElementLength::FieldRef(from) => {
+                    let length = &idents[from];
+                    quote! {
+                        #runtime::field::ensure_len(value.len(), #length as usize)?;
+                    }
+                }
+                ElementLength::Implicit | ElementLength::Fixed(_) => TokenStream2::new(),
+            };
+            let temp = quote! {
+                let mut #storage = ::std::vec::Vec::<u8>::new();
+                for value in #id {
+                    #validate_len
+                    assert_eq!(value.last(), ::core::option::Option::Some(&0));
+                    #storage.extend_from_slice(value);
+                }
+                let #tmp: &[u8] = &#storage;
+            };
+            let doc_ref = id.to_string();
+            Ok(FieldPlan {
+                param: Some((id, ty)),
+                temp: Some(temp),
+                call: tmp,
+                doc_ref,
+            })
+        }
+        StringEncoding::Utf8 => {
+            let ty = array_param_ty(quote!(&str), value.cardinality)?;
+            let storage = format_ident!("__u8a{}_storage", field_index);
+            let tmp = format_ident!("__u8a{}", field_index);
+            let encode = match length {
+                ElementLength::Implicit => quote!(#runtime::field::to_cstring(value)),
+                ElementLength::Fixed(length) => {
+                    quote!(#runtime::field::to_cstring_fixed_len(value, #length))
+                }
+                ElementLength::FieldRef(from) => {
+                    let length = &idents[from];
+                    quote!(#runtime::field::to_cstring_fixed_len(value, #length as usize))
+                }
+            };
+            let temp = quote! {
+                let mut #storage = ::std::vec::Vec::<u8>::new();
+                for value in #id {
+                    let encoded = #encode;
+                    #storage.extend_from_slice(&encoded);
+                }
+                let #tmp: &[u8] = &#storage;
+            };
+            let doc_ref = id.to_string();
+            Ok(FieldPlan {
+                param: Some((id, ty)),
+                temp: Some(temp),
+                call: tmp,
+                doc_ref,
+            })
+        }
+    }
+}
+
+fn plan_value_field(
+    field_index: usize,
+    value: ValuePlan,
+    id: Ident,
+    idents: &[Ident],
+    ev: &Event,
+    specs: &[FieldSpec],
+    codegen: &CodegenContext,
+) -> anyhow::Result<FieldPlan> {
+    let runtime = &codegen.runtime;
+
+    match value.kind {
+        ValueKind::Scalar => {
+            if value.cardinality == Cardinality::Single {
+                Ok(direct_field_plan(id, specs[field_index].rust_ty.clone()))
+            } else {
+                let element_ty = scalar_rust_ty(&ev.params[field_index].win_type, codegen)
+                    .expect("scalar value plan must have a scalar type");
+                let ty = array_param_ty(element_ty, value.cardinality)?;
+                Ok(direct_field_plan(id, ty))
+            }
+        }
+        ValueKind::Boolean => {
+            if value.cardinality == Cardinality::Single {
+                return Ok(direct_field_plan(id, specs[field_index].rust_ty.clone()));
+            }
+            let ty = array_param_ty(quote!(bool), value.cardinality)?;
+            let storage = format_ident!("__ba{}_storage", field_index);
+            let tmp = format_ident!("__ba{}", field_index);
+            let temp = quote! {
+                let #storage: ::std::vec::Vec<i32> =
+                    #id.iter().copied().map(i32::from).collect();
+                let #tmp: &[i32] = &#storage;
+            };
+            let doc_ref = id.to_string();
+            Ok(FieldPlan {
+                param: Some((id, ty)),
+                temp: Some(temp),
+                call: tmp,
+                doc_ref,
+            })
+        }
+        ValueKind::String { .. } => {
+            plan_string_value(field_index, value, id, idents, specs, codegen)
+        }
+        ValueKind::Binary { length } => {
+            if value.cardinality == Cardinality::Single {
+                return Ok(match length {
+                    ElementLength::Fixed(length) => direct_field_plan(id, quote!(&[u8; #length])),
+                    ElementLength::Implicit | ElementLength::FieldRef(_) => {
+                        direct_field_plan(id, specs[field_index].rust_ty.clone())
+                    }
+                });
+            }
+
+            match length {
+                ElementLength::Fixed(length) => {
+                    let ty = array_param_ty(quote!([u8; #length]), value.cardinality)?;
+                    let tmp = format_ident!("__fba{}", field_index);
+                    let temp = quote! {
+                        let #tmp: &[u8] = #id.as_flattened();
+                    };
+                    let doc_ref = id.to_string();
+                    Ok(FieldPlan {
+                        param: Some((id, ty)),
+                        temp: Some(temp),
+                        call: tmp,
+                        doc_ref,
+                    })
+                }
+                ElementLength::FieldRef(_) => {
+                    let ty = array_param_ty(quote!(&[u8]), value.cardinality)?;
+                    let storage = format_ident!("__vba{}_storage", field_index);
+                    let tmp = format_ident!("__vba{}", field_index);
+                    let temp = quote! {
+                        let #storage: ::std::vec::Vec<u8> = #id
+                            .iter()
+                            .flat_map(|value| value.iter().copied())
+                            .collect();
+                        let #tmp: &[u8] = &#storage;
+                    };
+                    let doc_ref = id.to_string();
+                    Ok(FieldPlan {
+                        param: Some((id, ty)),
+                        temp: Some(temp),
+                        call: tmp,
+                        doc_ref,
+                    })
+                }
+                ElementLength::Implicit => {
+                    anyhow::bail!("internal error: binary array has no element length")
+                }
+            }
+        }
+        ValueKind::Sid => {
+            if value.cardinality == Cardinality::Single {
+                return Ok(direct_field_plan(id, specs[field_index].rust_ty.clone()));
+            }
+            let sid_ty = quote!(&#runtime::field::Sid);
+            let ty = array_param_ty(sid_ty, value.cardinality)?;
+            let storage = format_ident!("__sa{}_storage", field_index);
+            let tmp = format_ident!("__sa{}", field_index);
+            let temp = quote! {
+                let mut #storage = ::std::vec::Vec::<u8>::new();
+                for value in #id {
+                    #storage.extend_from_slice(value.as_bytes());
+                }
+                let #tmp: &[u8] = &#storage;
+            };
+            let doc_ref = id.to_string();
+            Ok(FieldPlan {
+                param: Some((id, ty)),
+                temp: Some(temp),
+                call: tmp,
+                doc_ref,
+            })
+        }
+    }
+}
+
+/// Resolves field dependencies, then produces the public parameter and serialization plan for
+/// each manifest field.
 fn plan_event(
     ev: &Event,
     p: &Provider,
@@ -287,93 +763,126 @@ fn plan_event(
 ) -> anyhow::Result<Vec<FieldPlan>> {
     let n = ev.params.len();
 
-    // Map original field names to indexes for resolving length="field" references
     let mut index_by_name: HashMap<&str, usize> = HashMap::new();
-    for (i, t) in ev.params.iter().enumerate() {
-        index_by_name.entry(t.name.as_str()).or_insert(i);
+    for (index, field) in ev.params.iter().enumerate() {
+        index_by_name.entry(field.name.as_str()).or_insert(index);
     }
 
-    let mut kinds = vec![Kind::Normal; n];
-    // Map each index to the only blob field that may claim it as its length
-    let mut claimed_by: Vec<Option<usize>> = vec![None; n];
+    let mut roles = (0..n)
+        .map(|index| build_value_plan(&index_by_name, ev, p, index).map(FieldRole::Value))
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
-    for (i, t) in ev.params.iter().enumerate() {
-        match &t.win_type {
-            // Enforce exact byte counts for fixed-length binary fields at the type level
-            WinType::Binary(Length::Constant(len)) => kinds[i] = Kind::FixedBinary(*len as usize),
-            // Encode fixed-length Unicode strings to the exact manifest length
-            WinType::UnicodeString(Length::Constant(len)) => {
-                kinds[i] = Kind::FixedLenUnicode(*len as usize)
+    // A referenced binary length is derived from exactly one binary field.
+    for index in 0..n {
+        let length_field = match &roles[index] {
+            FieldRole::Value(ValuePlan {
+                kind:
+                    ValueKind::Binary {
+                        length: ElementLength::FieldRef(length_field),
+                    },
+                ..
+            }) => Some(*length_field),
+            _ => None,
+        };
+        let Some(length_field) = length_field else {
+            continue;
+        };
+
+        match &roles[length_field] {
+            FieldRole::Value(_) => {
+                roles[length_field] = FieldRole::Derived(DerivedPlan::BinaryLength { from: index });
             }
-            // Convert every other Unicode string to UTF-16 in the generated method
-            WinType::UnicodeString(_) => kinds[i] = Kind::Unicode,
-            // Default ANSI strings must remain in the provider's code page. For a fixed length,
-            // require the caller to provide the exact encoded bytes including the terminator.
-            WinType::AnsiString(Length::Constant(len), AnsiEncoding::ProviderAnsi) => {
-                kinds[i] = Kind::FixedLenProviderAnsi(*len as usize)
+            FieldRole::Derived(existing) => {
+                let other = match existing {
+                    DerivedPlan::BinaryLength { from } => &ev.params[*from].name,
+                    DerivedPlan::ArrayCount { from } => &ev.params[from[0]].name,
+                };
+                anyhow::bail!(
+                    "field {:?} in event {} of provider {} is referenced by multiple derived values ({} and {})",
+                    ev.params[length_field].name,
+                    ev.symbol,
+                    p.symbol,
+                    other,
+                    ev.params[index].name
+                );
             }
-            WinType::AnsiString(_, AnsiEncoding::ProviderAnsi) => {}
-            // Output types that explicitly select UTF-8 can safely accept a Rust string.
-            WinType::AnsiString(Length::Constant(len), AnsiEncoding::Utf8) => {
-                kinds[i] = Kind::FixedLenUtf8Ansi(*len as usize)
-            }
-            WinType::AnsiString(_, AnsiEncoding::Utf8) => kinds[i] = Kind::Utf8Ansi,
-            // Hide and derive the referenced length field for variable-length binary data
-            WinType::Binary(Length::FieldRef(name)) => {
-                let j = *index_by_name.get(name.as_str()).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "binary field {} in event {} of provider {} references unknown length field {:?}",
-                        t.name, ev.symbol, p.symbol, name
-                    )
-                })?;
-                if j >= i {
-                    anyhow::bail!(
-                        "binary field {} in event {} of provider {} references length field {:?}, which must appear before it",
-                        t.name,
-                        ev.symbol,
-                        p.symbol,
-                        name
-                    );
-                }
-                if !is_length_int(&ev.params[j].win_type) {
-                    anyhow::bail!(
-                        "length field {:?} for binary field {} in event {} of provider {} must have type win:UInt8, win:UInt16, win:UInt32, or win:HexInt32",
-                        name,
-                        t.name,
-                        ev.symbol,
-                        p.symbol
-                    );
-                }
-                if let Some(other) = claimed_by[j] {
-                    anyhow::bail!(
-                        "length field {:?} in event {} of provider {} is referenced by multiple fields ({} and {})",
-                        name,
-                        ev.symbol,
-                        p.symbol,
-                        ev.params[other].name,
-                        t.name
-                    );
-                }
-                claimed_by[j] = Some(i);
-                kinds[j] = Kind::DerivedLen { from: i };
-            }
-            _ => {}
         }
     }
 
-    // Assign identifiers up front so a derived length declared before its blob can name it
+    // A count field may describe multiple arrays; generated code checks that their lengths agree.
+    for (index, field) in ev.params.iter().enumerate() {
+        let Count::FieldRef(name) = &field.count else {
+            continue;
+        };
+        let count_field = *index_by_name.get(name.as_str()).ok_or_else(|| {
+            anyhow::anyhow!(
+                "array field {} in event {} of provider {} references unknown count field {:?}",
+                field.name,
+                ev.symbol,
+                p.symbol,
+                name
+            )
+        })?;
+        if count_field >= index {
+            anyhow::bail!(
+                "array field {} in event {} of provider {} references count field {:?}, which must appear before it",
+                field.name,
+                ev.symbol,
+                p.symbol,
+                name
+            );
+        }
+        if !is_length_int(&ev.params[count_field].win_type)
+            || ev.params[count_field].count != Count::Single
+        {
+            anyhow::bail!(
+                "count field {:?} for array field {} in event {} of provider {} must be a scalar win:UInt8, win:UInt16, win:UInt32, or win:HexInt32",
+                name,
+                field.name,
+                ev.symbol,
+                p.symbol
+            );
+        }
+
+        roles[count_field] = match roles[count_field].clone() {
+            FieldRole::Value(_) => {
+                FieldRole::Derived(DerivedPlan::ArrayCount { from: vec![index] })
+            }
+            FieldRole::Derived(DerivedPlan::ArrayCount { mut from }) => {
+                from.push(index);
+                FieldRole::Derived(DerivedPlan::ArrayCount { from })
+            }
+            FieldRole::Derived(DerivedPlan::BinaryLength { from }) => {
+                anyhow::bail!(
+                    "field {:?} in event {} of provider {} is used as both a binary length and an array count ({} and {})",
+                    name,
+                    ev.symbol,
+                    p.symbol,
+                    ev.params[from].name,
+                    field.name
+                )
+            }
+        };
+    }
+
+    // Assign identifiers up front so derived fields can name later caller-provided values.
     let mut idents: Vec<Ident> = Vec::with_capacity(n);
     let mut exposed_names: HashMap<String, String> = HashMap::new();
-    for (i, (t, kind)) in ev.params.iter().zip(&kinds).enumerate() {
-        let ident = match kind {
-            Kind::DerivedLen { .. } => format_ident!("__len{}", i),
-            _ => {
-                let name = safe_ident(&ccase!(snake, &t.name));
-                if let Some(prev) = exposed_names.insert(name.clone(), t.name.clone()) {
+    for (index, (field, role)) in ev.params.iter().zip(&roles).enumerate() {
+        let ident = match role {
+            FieldRole::Derived(DerivedPlan::BinaryLength { .. }) => {
+                format_ident!("__len{}", index)
+            }
+            FieldRole::Derived(DerivedPlan::ArrayCount { .. }) => {
+                format_ident!("__count{}", index)
+            }
+            FieldRole::Value(_) => {
+                let name = safe_ident(&ccase!(snake, &field.name));
+                if let Some(previous) = exposed_names.insert(name.clone(), field.name.clone()) {
                     anyhow::bail!(
                         "param name {} collides with {} in event {} of provider {} (both transform to: {})",
-                        t.name,
-                        prev,
+                        field.name,
+                        previous,
                         ev.symbol,
                         p.symbol,
                         name
@@ -385,103 +894,53 @@ fn plan_event(
         idents.push(ident);
     }
 
-    let mut plans = Vec::with_capacity(n);
     let runtime = &codegen.runtime;
-    for i in 0..n {
-        let id = idents[i].clone();
-        let plan = match kinds[i] {
-            Kind::Normal => {
-                let ty = specs[i].rust_ty.clone();
-                let doc_ref = id.to_string();
-                FieldPlan {
-                    param: Some((id.clone(), ty)),
-                    temp: None,
-                    call: id,
-                    doc_ref,
-                }
+    let mut plans = Vec::with_capacity(n);
+    for index in 0..n {
+        let id = idents[index].clone();
+        let plan = match &roles[index] {
+            FieldRole::Value(value) => {
+                plan_value_field(index, *value, id, &idents, ev, specs, codegen)?
             }
-            Kind::FixedBinary(len) => {
-                let doc_ref = id.to_string();
-                FieldPlan {
-                    param: Some((id.clone(), quote!(&[u8; #len]))),
-                    temp: None,
-                    call: id,
-                    doc_ref,
-                }
-            }
-            Kind::Unicode => {
-                let tmp = format_ident!("__s{}", i);
-                // Borrowing the buffer extends its lifetime to the end of the method body
-                let temp = quote! {
-                    let #tmp: &[u16] = &#runtime::field::to_u16cstring(#id);
+            FieldRole::Derived(DerivedPlan::BinaryLength { from }) => {
+                let int_ty = specs[index].rust_ty.clone();
+                let blob = idents[*from].clone();
+                let source_is_array = Cardinality::from_count(&ev.params[*from].count).is_array();
+                let temp = if source_is_array {
+                    quote! {
+                        let #id: #int_ty =
+                            #runtime::field::checked_len(#runtime::field::uniform_len(#blob)?)?;
+                    }
+                } else {
+                    quote! {
+                        let #id: #int_ty = #runtime::field::checked_len(#blob.len())?;
+                    }
                 };
-                let doc_ref = id.to_string();
-                FieldPlan {
-                    param: Some((id, quote!(&str))),
-                    temp: Some(temp),
-                    call: tmp,
-                    doc_ref,
-                }
-            }
-            Kind::FixedLenUnicode(len) => {
-                let tmp = format_ident!("__f{}", i);
-                let temp = quote! {
-                    let #tmp: &[u16] =
-                        &#runtime::field::to_u16cstring_fixed_len(#id, #len);
-                };
-                let doc_ref = id.to_string();
-                FieldPlan {
-                    param: Some((id, quote!(&str))),
-                    temp: Some(temp),
-                    call: tmp,
-                    doc_ref,
-                }
-            }
-            Kind::FixedLenProviderAnsi(len) => {
-                let doc_ref = id.to_string();
-                FieldPlan {
-                    param: Some((id.clone(), quote!(&[u8; #len]))),
-                    temp: None,
-                    call: id,
-                    doc_ref,
-                }
-            }
-            Kind::Utf8Ansi => {
-                let tmp = format_ident!("__a{}", i);
-                // Borrowing the buffer extends its lifetime to the end of the method body
-                let temp = quote! {
-                    let #tmp: &[u8] = &#runtime::field::to_cstring(#id);
-                };
-                let doc_ref = id.to_string();
-                FieldPlan {
-                    param: Some((id, quote!(&str))),
-                    temp: Some(temp),
-                    call: tmp,
-                    doc_ref,
-                }
-            }
-            Kind::FixedLenUtf8Ansi(len) => {
-                let tmp = format_ident!("__af{}", i);
-                let temp = quote! {
-                    let #tmp: &[u8] =
-                        &#runtime::field::to_cstring_fixed_len(#id, #len);
-                };
-                let doc_ref = id.to_string();
-                FieldPlan {
-                    param: Some((id, quote!(&str))),
-                    temp: Some(temp),
-                    call: tmp,
-                    doc_ref,
-                }
-            }
-            Kind::DerivedLen { from } => {
-                let int_ty = specs[i].rust_ty.clone();
-                let blob = idents[from].clone();
-                let temp = quote! {
-                    let #id: #int_ty = #runtime::field::checked_len(#blob.len())?;
-                };
-                // The length field is hidden, a placeholder on it refers to the blob's length
                 let doc_ref = format!("{}.len", blob);
+                FieldPlan {
+                    param: None,
+                    temp: Some(temp),
+                    call: id,
+                    doc_ref,
+                }
+            }
+            FieldRole::Derived(DerivedPlan::ArrayCount { from }) => {
+                let first = *from
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("internal error: array count has no source"))?;
+                let int_ty = specs[index].rust_ty.clone();
+                let array = idents[first].clone();
+                let matching_lengths = from.iter().skip(1).map(|source| {
+                    let other = &idents[*source];
+                    quote! {
+                        #runtime::field::ensure_len(#other.len(), #array.len())?;
+                    }
+                });
+                let temp = quote! {
+                    #(#matching_lengths)*
+                    let #id: #int_ty = #runtime::field::checked_len(#array.len())?;
+                };
+                let doc_ref = format!("{}.len", array);
                 FieldPlan {
                     param: None,
                     temp: Some(temp),
@@ -683,6 +1142,9 @@ fn gen_backing(name: &str, specs: &[FieldSpec], codegen: &CodegenContext) -> Tok
             FieldClass::Bytes => {
                 descs.push(quote! { #runtime::field::bytes(#arg) });
             }
+            FieldClass::Slice => {
+                descs.push(quote! { #runtime::field::slice(#arg) });
+            }
             FieldClass::Sid => {
                 descs.push(quote! { #runtime::field::sid(#arg) });
             }
@@ -717,6 +1179,8 @@ enum FieldClass {
     AnsiStr,
     /// Passes `&[u8]` through directly.
     Bytes,
+    /// Passes a contiguous slice of fixed-size `Copy` values.
+    Slice,
     /// Borrows a `field::Sid`.
     Sid,
 }
@@ -728,27 +1192,59 @@ struct FieldSpec {
     class: FieldClass,
 }
 
-fn classify(w: &WinType, codegen: &CodegenContext) -> FieldSpec {
+fn scalar_rust_ty(w: &WinType, codegen: &CodegenContext) -> Option<TokenStream2> {
     let runtime = &codegen.runtime;
-    let scalar = |frag, ty: TokenStream2| FieldSpec {
-        frag,
-        rust_ty: ty,
-        class: FieldClass::Scalar,
-    };
     match w {
-        WinType::Int8 => scalar("c", quote!(i8)),
-        WinType::UInt8 => scalar("u", quote!(u8)),
-        WinType::Int16 => scalar("l", quote!(i16)),
-        WinType::UInt16 => scalar("h", quote!(u16)),
-        WinType::Int32 => scalar("d", quote!(i32)),
-        WinType::UInt32 | WinType::HexInt32 => scalar("q", quote!(u32)),
-        WinType::Int64 => scalar("i", quote!(i64)),
-        WinType::UInt64 | WinType::HexInt64 => scalar("x", quote!(u64)),
-        WinType::FileTime => scalar("m", quote!(#runtime::FILETIME)),
-        WinType::Float => scalar("f", quote!(f32)),
-        WinType::Double => scalar("g", quote!(f64)),
-        WinType::Pointer => scalar("p", quote!(usize)),
-        WinType::Guid => scalar("j", quote!(#runtime::GUID)),
+        WinType::Int8 => Some(quote!(i8)),
+        WinType::UInt8 => Some(quote!(u8)),
+        WinType::Int16 => Some(quote!(i16)),
+        WinType::UInt16 => Some(quote!(u16)),
+        WinType::Int32 => Some(quote!(i32)),
+        WinType::UInt32 | WinType::HexInt32 => Some(quote!(u32)),
+        WinType::Int64 => Some(quote!(i64)),
+        WinType::UInt64 | WinType::HexInt64 => Some(quote!(u64)),
+        WinType::FileTime => Some(quote!(#runtime::FILETIME)),
+        WinType::Float => Some(quote!(f32)),
+        WinType::Double => Some(quote!(f64)),
+        WinType::Pointer => Some(quote!(usize)),
+        WinType::Guid => Some(quote!(#runtime::GUID)),
+        WinType::SystemTime => Some(quote!(#runtime::SYSTEMTIME)),
+        _ => None,
+    }
+}
+
+fn scalar_frag(w: &WinType, array: bool) -> Option<&'static str> {
+    let (single, multiple) = match w {
+        WinType::Int8 => ("c", "C"),
+        WinType::UInt8 => ("u", "U"),
+        WinType::Int16 => ("l", "L"),
+        WinType::UInt16 => ("h", "H"),
+        WinType::Int32 => ("d", "D"),
+        WinType::UInt32 | WinType::HexInt32 => ("q", "Q"),
+        WinType::Int64 => ("i", "I"),
+        WinType::UInt64 | WinType::HexInt64 => ("x", "X"),
+        WinType::FileTime => ("m", "M"),
+        WinType::Float => ("f", "F"),
+        WinType::Double => ("g", "G"),
+        WinType::Pointer => ("p", "P"),
+        WinType::Guid => ("j", "J"),
+        WinType::SystemTime => ("y", "Y"),
+        _ => return None,
+    };
+    Some(if array { multiple } else { single })
+}
+
+fn classify_single(w: &WinType, codegen: &CodegenContext) -> FieldSpec {
+    let runtime = &codegen.runtime;
+    if let Some(ty) = scalar_rust_ty(w, codegen) {
+        return FieldSpec {
+            frag: scalar_frag(w, false).expect("scalar type must have a fragment"),
+            rust_ty: ty,
+            class: FieldClass::Scalar,
+        };
+    }
+
+    match w {
         WinType::Boolean => FieldSpec {
             frag: "t",
             rust_ty: quote!(bool),
@@ -769,12 +1265,45 @@ fn classify(w: &WinType, codegen: &CodegenContext) -> FieldSpec {
             rust_ty: quote!(&[u8]),
             class: FieldClass::Bytes,
         },
-        WinType::SystemTime => scalar("y", quote!(#runtime::SYSTEMTIME)),
         WinType::Sid => FieldSpec {
             frag: "k",
             rust_ty: quote!(&#runtime::field::Sid),
             class: FieldClass::Sid,
         },
+        _ => unreachable!("all scalar types returned above"),
+    }
+}
+
+fn classify(t: &crate::model::TypeInfo, codegen: &CodegenContext) -> FieldSpec {
+    if t.count == Count::Single {
+        return classify_single(&t.win_type, codegen);
+    }
+
+    if let Some(ty) = scalar_rust_ty(&t.win_type, codegen) {
+        return FieldSpec {
+            frag: scalar_frag(&t.win_type, true).expect("scalar type must have a fragment"),
+            rust_ty: quote!(&[#ty]),
+            class: FieldClass::Slice,
+        };
+    }
+
+    match &t.win_type {
+        WinType::Boolean => FieldSpec {
+            frag: "T",
+            rust_ty: quote!(&[i32]),
+            class: FieldClass::Slice,
+        },
+        WinType::UnicodeString(_) => FieldSpec {
+            frag: "Z",
+            rust_ty: quote!(&[u16]),
+            class: FieldClass::Slice,
+        },
+        WinType::AnsiString(_, _) | WinType::Binary(_) | WinType::Sid => FieldSpec {
+            frag: "B",
+            rust_ty: quote!(&[u8]),
+            class: FieldClass::Bytes,
+        },
+        _ => unreachable!("all scalar types returned above"),
     }
 }
 
@@ -870,6 +1399,7 @@ mod tests {
                 .map(|(name, win_type)| TypeInfo {
                     name: name.into(),
                     win_type,
+                    count: Count::Single,
                 })
                 .collect(),
             message: None,
@@ -881,11 +1411,7 @@ mod tests {
         let mut e = event(vec![("A", WinType::UInt32)]);
         e.message = Some("Hello %1 world".into());
         let codegen = CodegenContext::canonical();
-        let specs: Vec<_> = e
-            .params
-            .iter()
-            .map(|t| classify(&t.win_type, &codegen))
-            .collect();
+        let specs: Vec<_> = e.params.iter().map(|t| classify(t, &codegen)).collect();
         let p = Provider {
             symbol: "P".into(),
             guid: 0,
@@ -941,11 +1467,7 @@ mod tests {
             guid: 0,
             events: vec![],
         };
-        let specs: Vec<_> = e
-            .params
-            .iter()
-            .map(|t| classify(&t.win_type, &codegen))
-            .collect();
+        let specs: Vec<_> = e.params.iter().map(|t| classify(t, &codegen)).collect();
         plan_event(e, &p, &specs, &codegen)
     }
 
@@ -1095,5 +1617,97 @@ mod tests {
             ("B", WinType::Binary(Length::FieldRef("Size".into()))),
         ]);
         assert!(plan(&e).is_err());
+    }
+
+    #[test]
+    fn fixed_count_scalar_becomes_array_reference() {
+        let mut e = event(vec![("Values", WinType::UInt32)]);
+        e.params[0].count = Count::Constant(3);
+
+        let plans = plan(&e).unwrap();
+        let (_, ty) = plans[0].param.as_ref().expect("Values should be exposed");
+        let ty = ty.to_string();
+        assert!(ty.contains("u32"));
+        assert!(ty.contains('3'));
+        assert!(plans[0].temp.is_none());
+    }
+
+    #[test]
+    fn value_plan_keeps_array_dimensions_orthogonal() {
+        let mut e = event(vec![("Names", WinType::UnicodeString(Length::Constant(4)))]);
+        e.params[0].count = Count::Constant(2);
+        let p = Provider {
+            symbol: "P".into(),
+            guid: 0,
+            events: vec![],
+        };
+        let index_by_name = HashMap::from([("Names", 0)]);
+
+        let value = build_value_plan(&index_by_name, &e, &p, 0).unwrap();
+
+        assert!(matches!(value.cardinality, Cardinality::Fixed(2)));
+        assert!(matches!(
+            value.kind,
+            ValueKind::String {
+                encoding: StringEncoding::Unicode,
+                length: ElementLength::Fixed(4),
+            }
+        ));
+    }
+
+    #[test]
+    fn count_field_is_hidden_and_derived() {
+        let mut e = event(vec![
+            ("ValueCount", WinType::UInt16),
+            ("Values", WinType::UInt32),
+        ]);
+        e.params[1].count = Count::FieldRef("ValueCount".into());
+
+        let plans = plan(&e).unwrap();
+        assert!(plans[0].param.is_none(), "ValueCount should be hidden");
+        assert!(plans[0].temp.is_some(), "ValueCount should be derived");
+        let (_, ty) = plans[1].param.as_ref().expect("Values should be exposed");
+        assert!(ty.to_string().contains("[u32]"));
+    }
+
+    #[test]
+    fn shared_count_field_checks_array_lengths() {
+        let mut e = event(vec![
+            ("ValueCount", WinType::UInt16),
+            ("Primary", WinType::UInt32),
+            ("Secondary", WinType::UInt16),
+        ]);
+        e.params[1].count = Count::FieldRef("ValueCount".into());
+        e.params[2].count = Count::FieldRef("ValueCount".into());
+
+        let plans = plan(&e).unwrap();
+        let temp = plans[0]
+            .temp
+            .as_ref()
+            .expect("ValueCount should be derived")
+            .to_string();
+        assert!(temp.contains("ensure_len"));
+        assert_eq!(exposed_count(&plans), 2);
+    }
+
+    #[test]
+    fn count_field_reference_is_validated() {
+        let mut unknown = event(vec![("Values", WinType::UInt32)]);
+        unknown.params[0].count = Count::FieldRef("Missing".into());
+        assert!(plan(&unknown).is_err());
+
+        let mut forward = event(vec![
+            ("Values", WinType::UInt32),
+            ("ValueCount", WinType::UInt16),
+        ]);
+        forward.params[0].count = Count::FieldRef("ValueCount".into());
+        assert!(plan(&forward).is_err());
+
+        let mut non_integer = event(vec![
+            ("ValueCount", WinType::Float),
+            ("Values", WinType::UInt32),
+        ]);
+        non_integer.params[1].count = Count::FieldRef("ValueCount".into());
+        assert!(plan(&non_integer).is_err());
     }
 }

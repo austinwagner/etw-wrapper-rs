@@ -123,6 +123,37 @@ The macro maps manifest `inType` values to Rust parameter types as follows:
 | `win:Binary`                                                | `&[u8]`        | `length="N"` becomes `&[u8; N]`, `length="Field"` derives that field (see below) |
 | `win:SID`                                                   | `&field::Sid`  | Build from a `PSID` via `unsafe Sid::from_psid`, or borrow an owned `SidBuf`     |
 
+### Arrays
+
+The macro supports the manifest `count` attribute for every input type in the table above.
+A constant count is enforced at the type level:
+
+```xml
+<data name="Values" inType="win:UInt32" count="3"/>
+```
+
+```rust
+fn event(&self, values: &[u32; 3]) -> Result<()>
+```
+
+A field-reference count is derived from the array and is not exposed as a separate parameter:
+
+```xml
+<data name="ValueCount" inType="win:UInt16"/>
+<data name="Values"     inType="win:UInt32" count="ValueCount"/>
+```
+
+```rust
+fn event(&self, values: &[u32]) -> Result<()>
+```
+
+Scalar arrays use `&[T; N]` or `&[T]`. String arrays use arrays or slices of `&str`;
+provider-code-page ANSI strings use `&[u8]`; SID arrays use `&field::Sid`. The generated method
+packs variable-length elements into the contiguous layout expected by ETW. Fixed-length binary
+arrays use `&[[u8; LENGTH]; COUNT]` for two-dimensional fixed sizes. When both binary `length` and
+`count` are field references, the method accepts a slice of byte slices, derives both fields, and
+returns `ERROR_INVALID_DATA` if the elements do not all have the same length.
+
 ### Variable-Length Fields
 
 #### Binary
