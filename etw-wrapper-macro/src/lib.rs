@@ -336,18 +336,21 @@ fn array_param_ty(element: TokenStream2, cardinality: Cardinality) -> anyhow::Re
     }
 }
 
-fn resolve_prior_length_field(
+/// Resolves a `length="..."` or `count="..."` reference (`role`) from the field at `field_index`
+/// (described as `subject` in errors) to the index of a scalar integer field declared before it.
+fn resolve_prior_int_field(
     index_by_name: &HashMap<&str, usize>,
     ev: &Event,
     p: &Provider,
     field_index: usize,
     name: &str,
     subject: &str,
+    role: &str,
 ) -> anyhow::Result<usize> {
     let field = &ev.params[field_index];
     let index = *index_by_name.get(name).ok_or_else(|| {
         anyhow::anyhow!(
-            "{subject} {} in event {} of provider {} references unknown length field {:?}",
+            "{subject} {} in event {} of provider {} references unknown {role} field {:?}",
             field.name,
             ev.symbol,
             p.symbol,
@@ -356,7 +359,7 @@ fn resolve_prior_length_field(
     })?;
     if index >= field_index {
         anyhow::bail!(
-            "{subject} {} in event {} of provider {} references length field {:?}, which must appear before it",
+            "{subject} {} in event {} of provider {} references {role} field {:?}, which must appear before it",
             field.name,
             ev.symbol,
             p.symbol,
@@ -365,7 +368,7 @@ fn resolve_prior_length_field(
     }
     if !is_length_int(&ev.params[index].win_type) || ev.params[index].count != Count::Single {
         anyhow::bail!(
-            "length field {:?} for {subject} {} in event {} of provider {} must be a scalar win:UInt8, win:UInt16, win:UInt32, or win:HexInt32",
+            "{role} field {:?} for {subject} {} in event {} of provider {} must be a scalar win:UInt8, win:UInt16, win:UInt32, or win:HexInt32",
             name,
             field.name,
             ev.symbol,
@@ -392,58 +395,58 @@ fn build_value_plan(
             Length::FieldRef(_) if cardinality == Cardinality::Single => {
                 Ok(ElementLength::Implicit)
             }
-            Length::FieldRef(name) => Ok(ElementLength::FieldRef(resolve_prior_length_field(
+            Length::FieldRef(name) => Ok(ElementLength::FieldRef(resolve_prior_int_field(
                 index_by_name,
                 ev,
                 p,
                 field_index,
                 name,
                 "string array field",
+                "length",
             )?)),
         }
     };
 
-    let kind = if scalar_frag(&field.win_type, false).is_some() {
-        ValueKind::Scalar
-    } else {
-        match &field.win_type {
-            WinType::Boolean => ValueKind::Boolean,
-            WinType::UnicodeString(length) => ValueKind::String {
-                encoding: StringEncoding::Unicode,
-                length: string_length(length)?,
+    let kind = match &field.win_type {
+        WinType::Boolean => ValueKind::Boolean,
+        WinType::UnicodeString(length) => ValueKind::String {
+            encoding: StringEncoding::Unicode,
+            length: string_length(length)?,
+        },
+        WinType::AnsiString(length, encoding) => ValueKind::String {
+            encoding: match encoding {
+                AnsiEncoding::ProviderAnsi => StringEncoding::ProviderAnsi,
+                AnsiEncoding::Utf8 => StringEncoding::Utf8,
             },
-            WinType::AnsiString(length, encoding) => ValueKind::String {
-                encoding: match encoding {
-                    AnsiEncoding::ProviderAnsi => StringEncoding::ProviderAnsi,
-                    AnsiEncoding::Utf8 => StringEncoding::Utf8,
-                },
-                length: string_length(length)?,
+            length: string_length(length)?,
+        },
+        WinType::Binary(length) => ValueKind::Binary {
+            length: match length {
+                Length::Implicit if cardinality.is_array() => {
+                    anyhow::bail!(
+                        "binary array field {} in event {} of provider {} must declare a length",
+                        field.name,
+                        ev.symbol,
+                        p.symbol
+                    )
+                }
+                Length::Implicit => ElementLength::Implicit,
+                Length::Constant(length) => ElementLength::Fixed(*length as usize),
+                Length::FieldRef(name) => ElementLength::FieldRef(resolve_prior_int_field(
+                    index_by_name,
+                    ev,
+                    p,
+                    field_index,
+                    name,
+                    "binary field",
+                    "length",
+                )?),
             },
-            WinType::Binary(length) => ValueKind::Binary {
-                length: match length {
-                    Length::Implicit if cardinality.is_array() => {
-                        anyhow::bail!(
-                            "binary array field {} in event {} of provider {} must declare a length",
-                            field.name,
-                            ev.symbol,
-                            p.symbol
-                        )
-                    }
-                    Length::Implicit => ElementLength::Implicit,
-                    Length::Constant(length) => ElementLength::Fixed(*length as usize),
-                    Length::FieldRef(name) => ElementLength::FieldRef(resolve_prior_length_field(
-                        index_by_name,
-                        ev,
-                        p,
-                        field_index,
-                        name,
-                        "binary field",
-                    )?),
-                },
-            },
-            WinType::Sid => ValueKind::Sid,
-            _ => unreachable!("all scalar types returned above"),
-        }
+        },
+        WinType::Sid => ValueKind::Sid,
+        // Every remaining WinType is a fixed-size scalar. A future non-scalar type missed here
+        // would still panic during classification via scalar_info.
+        _ => ValueKind::Scalar,
     };
 
     Ok(ValuePlan { kind, cardinality })
@@ -459,6 +462,41 @@ fn direct_field_plan(id: Ident, ty: TokenStream2) -> FieldPlan {
     }
 }
 
+/// A field plan whose parameter is re-encoded into the temporary `tmp` by `temp` before the
+/// backing helper call.
+fn buffered_plan(id: Ident, ty: TokenStream2, tmp: Ident, temp: TokenStream2) -> FieldPlan {
+    let doc_ref = id.to_string();
+    FieldPlan {
+        param: Some((id, ty)),
+        temp: Some(temp),
+        call: tmp,
+        doc_ref,
+    }
+}
+
+/// Plans an array parameter whose elements are flattened into one contiguous buffer of `elem_ty`.
+/// The statements produced by `per_element` run once per element with `value` bound to the
+/// element reference and the storage `Vec` identifier passed in.
+fn accumulated_plan(
+    field_index: usize,
+    id: Ident,
+    ty: TokenStream2,
+    elem_ty: TokenStream2,
+    per_element: impl FnOnce(&Ident) -> TokenStream2,
+) -> FieldPlan {
+    let storage = format_ident!("__t{}_storage", field_index);
+    let tmp = format_ident!("__t{}", field_index);
+    let body = per_element(&storage);
+    let temp = quote! {
+        let mut #storage = ::std::vec::Vec::<#elem_ty>::new();
+        for value in #id {
+            #body
+        }
+        let #tmp: &[#elem_ty] = &#storage;
+    };
+    buffered_plan(id, ty, tmp, temp)
+}
+
 fn plan_string_value(
     field_index: usize,
     value: ValuePlan,
@@ -472,108 +510,63 @@ fn plan_string_value(
         unreachable!("string planner requires a string value plan");
     };
 
+    // A provider-ANSI string is already encoded, so the caller's bytes pass through directly.
+    // The other encodings convert from `&str` with the paired (plain, fixed-length) runtime
+    // functions into a buffer with the given element type.
+    let encode_fns = match encoding {
+        StringEncoding::ProviderAnsi => None,
+        StringEncoding::Unicode => Some(("to_u16cstring", "to_u16cstring_fixed_len", quote!(u16))),
+        StringEncoding::Utf8 => Some(("to_cstring", "to_cstring_fixed_len", quote!(u8))),
+    };
+
     if value.cardinality == Cardinality::Single {
-        return Ok(match encoding {
-            StringEncoding::Unicode => {
-                let tmp = match length {
-                    ElementLength::Fixed(_) => format_ident!("__f{}", field_index),
-                    ElementLength::Implicit | ElementLength::FieldRef(_) => {
-                        format_ident!("__s{}", field_index)
-                    }
-                };
-                let encode = match length {
-                    ElementLength::Fixed(length) => {
-                        quote!(#runtime::field::to_u16cstring_fixed_len(#id, #length))
-                    }
-                    ElementLength::Implicit | ElementLength::FieldRef(_) => {
-                        quote!(#runtime::field::to_u16cstring(#id))
-                    }
-                };
-                let temp = quote! {
-                    let #tmp: &[u16] = &#encode;
-                };
-                let doc_ref = id.to_string();
-                FieldPlan {
-                    param: Some((id, quote!(&str))),
-                    temp: Some(temp),
-                    call: tmp,
-                    doc_ref,
-                }
-            }
-            StringEncoding::ProviderAnsi => match length {
+        let Some((plain, fixed, elem_ty)) = encode_fns else {
+            return Ok(match length {
                 ElementLength::Fixed(length) => direct_field_plan(id, quote!(&[u8; #length])),
                 ElementLength::Implicit | ElementLength::FieldRef(_) => {
                     direct_field_plan(id, specs[field_index].rust_ty.clone())
                 }
-            },
-            StringEncoding::Utf8 => {
-                let tmp = match length {
-                    ElementLength::Fixed(_) => format_ident!("__af{}", field_index),
-                    ElementLength::Implicit | ElementLength::FieldRef(_) => {
-                        format_ident!("__a{}", field_index)
-                    }
-                };
-                let encode = match length {
-                    ElementLength::Fixed(length) => {
-                        quote!(#runtime::field::to_cstring_fixed_len(#id, #length))
-                    }
-                    ElementLength::Implicit | ElementLength::FieldRef(_) => {
-                        quote!(#runtime::field::to_cstring(#id))
-                    }
-                };
-                let temp = quote! {
-                    let #tmp: &[u8] = &#encode;
-                };
-                let doc_ref = id.to_string();
-                FieldPlan {
-                    param: Some((id, quote!(&str))),
-                    temp: Some(temp),
-                    call: tmp,
-                    doc_ref,
-                }
+            });
+        };
+        let plain = format_ident!("{plain}");
+        let fixed = format_ident!("{fixed}");
+        let encode = match length {
+            ElementLength::Fixed(length) => quote!(#runtime::field::#fixed(#id, #length)),
+            // A referenced length on a scalar string keeps NUL-terminated behavior
+            ElementLength::Implicit | ElementLength::FieldRef(_) => {
+                quote!(#runtime::field::#plain(#id))
             }
-        });
+        };
+        let tmp = format_ident!("__t{}", field_index);
+        let temp = quote! {
+            let #tmp: &[#elem_ty] = &#encode;
+        };
+        return Ok(buffered_plan(id, quote!(&str), tmp, temp));
     }
 
-    match encoding {
-        StringEncoding::Unicode => {
+    match encode_fns {
+        Some((plain, fixed, elem_ty)) => {
+            let plain = format_ident!("{plain}");
+            let fixed = format_ident!("{fixed}");
             let ty = array_param_ty(quote!(&str), value.cardinality)?;
-            let storage = format_ident!("__ua{}_storage", field_index);
-            let tmp = format_ident!("__ua{}", field_index);
             let encode = match length {
-                ElementLength::Implicit => quote!(#runtime::field::to_u16cstring(value)),
-                ElementLength::Fixed(length) => {
-                    quote!(#runtime::field::to_u16cstring_fixed_len(value, #length))
-                }
+                ElementLength::Implicit => quote!(#runtime::field::#plain(value)),
+                ElementLength::Fixed(length) => quote!(#runtime::field::#fixed(value, #length)),
                 ElementLength::FieldRef(from) => {
                     let length = &idents[from];
-                    quote!(#runtime::field::to_u16cstring_fixed_len(value, #length as usize))
+                    quote!(#runtime::field::#fixed(value, #length as usize))
                 }
             };
-            let temp = quote! {
-                let mut #storage = ::std::vec::Vec::<u16>::new();
-                for value in #id {
-                    let encoded = #encode;
-                    #storage.extend_from_slice(&encoded);
-                }
-                let #tmp: &[u16] = &#storage;
-            };
-            let doc_ref = id.to_string();
-            Ok(FieldPlan {
-                param: Some((id, ty)),
-                temp: Some(temp),
-                call: tmp,
-                doc_ref,
-            })
+            Ok(accumulated_plan(field_index, id, ty, elem_ty, |storage| {
+                quote! { #storage.extend_from_slice(&#encode); }
+            }))
         }
-        StringEncoding::ProviderAnsi => {
+        None => {
             let element_ty = match length {
                 ElementLength::Fixed(length) => quote!([u8; #length]),
                 ElementLength::Implicit | ElementLength::FieldRef(_) => quote!(&[u8]),
             };
             let ty = array_param_ty(element_ty, value.cardinality)?;
-            let storage = format_ident!("__aa{}_storage", field_index);
-            let tmp = format_ident!("__aa{}", field_index);
             let validate_len = match length {
                 ElementLength::FieldRef(from) => {
                     let length = &idents[from];
@@ -583,52 +576,13 @@ fn plan_string_value(
                 }
                 ElementLength::Implicit | ElementLength::Fixed(_) => TokenStream2::new(),
             };
-            let temp = quote! {
-                let mut #storage = ::std::vec::Vec::<u8>::new();
-                for value in #id {
+            Ok(accumulated_plan(field_index, id, ty, quote!(u8), |storage| {
+                quote! {
                     #validate_len
                     assert_eq!(value.last(), ::core::option::Option::Some(&0));
                     #storage.extend_from_slice(value);
                 }
-                let #tmp: &[u8] = &#storage;
-            };
-            let doc_ref = id.to_string();
-            Ok(FieldPlan {
-                param: Some((id, ty)),
-                temp: Some(temp),
-                call: tmp,
-                doc_ref,
-            })
-        }
-        StringEncoding::Utf8 => {
-            let ty = array_param_ty(quote!(&str), value.cardinality)?;
-            let storage = format_ident!("__u8a{}_storage", field_index);
-            let tmp = format_ident!("__u8a{}", field_index);
-            let encode = match length {
-                ElementLength::Implicit => quote!(#runtime::field::to_cstring(value)),
-                ElementLength::Fixed(length) => {
-                    quote!(#runtime::field::to_cstring_fixed_len(value, #length))
-                }
-                ElementLength::FieldRef(from) => {
-                    let length = &idents[from];
-                    quote!(#runtime::field::to_cstring_fixed_len(value, #length as usize))
-                }
-            };
-            let temp = quote! {
-                let mut #storage = ::std::vec::Vec::<u8>::new();
-                for value in #id {
-                    let encoded = #encode;
-                    #storage.extend_from_slice(&encoded);
-                }
-                let #tmp: &[u8] = &#storage;
-            };
-            let doc_ref = id.to_string();
-            Ok(FieldPlan {
-                param: Some((id, ty)),
-                temp: Some(temp),
-                call: tmp,
-                doc_ref,
-            })
+            }))
         }
     }
 }
@@ -649,7 +603,7 @@ fn plan_value_field(
             if value.cardinality == Cardinality::Single {
                 Ok(direct_field_plan(id, specs[field_index].rust_ty.clone()))
             } else {
-                let element_ty = scalar_rust_ty(&ev.params[field_index].win_type, codegen)
+                let (_, _, element_ty) = scalar_info(&ev.params[field_index].win_type, codegen)
                     .expect("scalar value plan must have a scalar type");
                 let ty = array_param_ty(element_ty, value.cardinality)?;
                 Ok(direct_field_plan(id, ty))
@@ -660,20 +614,9 @@ fn plan_value_field(
                 return Ok(direct_field_plan(id, specs[field_index].rust_ty.clone()));
             }
             let ty = array_param_ty(quote!(bool), value.cardinality)?;
-            let storage = format_ident!("__ba{}_storage", field_index);
-            let tmp = format_ident!("__ba{}", field_index);
-            let temp = quote! {
-                let #storage: ::std::vec::Vec<i32> =
-                    #id.iter().copied().map(i32::from).collect();
-                let #tmp: &[i32] = &#storage;
-            };
-            let doc_ref = id.to_string();
-            Ok(FieldPlan {
-                param: Some((id, ty)),
-                temp: Some(temp),
-                call: tmp,
-                doc_ref,
-            })
+            Ok(accumulated_plan(field_index, id, ty, quote!(i32), |storage| {
+                quote! { #storage.push(i32::from(*value)); }
+            }))
         }
         ValueKind::String { .. } => {
             plan_string_value(field_index, value, id, idents, specs, codegen)
@@ -691,36 +634,17 @@ fn plan_value_field(
             match length {
                 ElementLength::Fixed(length) => {
                     let ty = array_param_ty(quote!([u8; #length]), value.cardinality)?;
-                    let tmp = format_ident!("__fba{}", field_index);
+                    let tmp = format_ident!("__t{}", field_index);
                     let temp = quote! {
                         let #tmp: &[u8] = #id.as_flattened();
                     };
-                    let doc_ref = id.to_string();
-                    Ok(FieldPlan {
-                        param: Some((id, ty)),
-                        temp: Some(temp),
-                        call: tmp,
-                        doc_ref,
-                    })
+                    Ok(buffered_plan(id, ty, tmp, temp))
                 }
                 ElementLength::FieldRef(_) => {
                     let ty = array_param_ty(quote!(&[u8]), value.cardinality)?;
-                    let storage = format_ident!("__vba{}_storage", field_index);
-                    let tmp = format_ident!("__vba{}", field_index);
-                    let temp = quote! {
-                        let #storage: ::std::vec::Vec<u8> = #id
-                            .iter()
-                            .flat_map(|value| value.iter().copied())
-                            .collect();
-                        let #tmp: &[u8] = &#storage;
-                    };
-                    let doc_ref = id.to_string();
-                    Ok(FieldPlan {
-                        param: Some((id, ty)),
-                        temp: Some(temp),
-                        call: tmp,
-                        doc_ref,
-                    })
+                    Ok(accumulated_plan(field_index, id, ty, quote!(u8), |storage| {
+                        quote! { #storage.extend_from_slice(value); }
+                    }))
                 }
                 ElementLength::Implicit => {
                     anyhow::bail!("internal error: binary array has no element length")
@@ -731,24 +655,10 @@ fn plan_value_field(
             if value.cardinality == Cardinality::Single {
                 return Ok(direct_field_plan(id, specs[field_index].rust_ty.clone()));
             }
-            let sid_ty = quote!(&#runtime::field::Sid);
-            let ty = array_param_ty(sid_ty, value.cardinality)?;
-            let storage = format_ident!("__sa{}_storage", field_index);
-            let tmp = format_ident!("__sa{}", field_index);
-            let temp = quote! {
-                let mut #storage = ::std::vec::Vec::<u8>::new();
-                for value in #id {
-                    #storage.extend_from_slice(value.as_bytes());
-                }
-                let #tmp: &[u8] = &#storage;
-            };
-            let doc_ref = id.to_string();
-            Ok(FieldPlan {
-                param: Some((id, ty)),
-                temp: Some(temp),
-                call: tmp,
-                doc_ref,
-            })
+            let ty = array_param_ty(quote!(&#runtime::field::Sid), value.cardinality)?;
+            Ok(accumulated_plan(field_index, id, ty, quote!(u8), |storage| {
+                quote! { #storage.extend_from_slice(value.as_bytes()); }
+            }))
         }
     }
 }
@@ -814,35 +724,15 @@ fn plan_event(
         let Count::FieldRef(name) = &field.count else {
             continue;
         };
-        let count_field = *index_by_name.get(name.as_str()).ok_or_else(|| {
-            anyhow::anyhow!(
-                "array field {} in event {} of provider {} references unknown count field {:?}",
-                field.name,
-                ev.symbol,
-                p.symbol,
-                name
-            )
-        })?;
-        if count_field >= index {
-            anyhow::bail!(
-                "array field {} in event {} of provider {} references count field {:?}, which must appear before it",
-                field.name,
-                ev.symbol,
-                p.symbol,
-                name
-            );
-        }
-        if !is_length_int(&ev.params[count_field].win_type)
-            || ev.params[count_field].count != Count::Single
-        {
-            anyhow::bail!(
-                "count field {:?} for array field {} in event {} of provider {} must be a scalar win:UInt8, win:UInt16, win:UInt32, or win:HexInt32",
-                name,
-                field.name,
-                ev.symbol,
-                p.symbol
-            );
-        }
+        let count_field = resolve_prior_int_field(
+            &index_by_name,
+            ev,
+            p,
+            index,
+            name,
+            "array field",
+            "count",
+        )?;
 
         roles[count_field] = match roles[count_field].clone() {
             FieldRole::Value(_) => {
@@ -1192,54 +1082,38 @@ struct FieldSpec {
     class: FieldClass,
 }
 
-fn scalar_rust_ty(w: &WinType, codegen: &CodegenContext) -> Option<TokenStream2> {
+/// The backing-helper name fragments (scalar and slice forms) and Rust type for a scalar
+/// `WinType`. Returns `None` for variable-size types.
+fn scalar_info(
+    w: &WinType,
+    codegen: &CodegenContext,
+) -> Option<(&'static str, &'static str, TokenStream2)> {
     let runtime = &codegen.runtime;
-    match w {
-        WinType::Int8 => Some(quote!(i8)),
-        WinType::UInt8 => Some(quote!(u8)),
-        WinType::Int16 => Some(quote!(i16)),
-        WinType::UInt16 => Some(quote!(u16)),
-        WinType::Int32 => Some(quote!(i32)),
-        WinType::UInt32 | WinType::HexInt32 => Some(quote!(u32)),
-        WinType::Int64 => Some(quote!(i64)),
-        WinType::UInt64 | WinType::HexInt64 => Some(quote!(u64)),
-        WinType::FileTime => Some(quote!(#runtime::FILETIME)),
-        WinType::Float => Some(quote!(f32)),
-        WinType::Double => Some(quote!(f64)),
-        WinType::Pointer => Some(quote!(usize)),
-        WinType::Guid => Some(quote!(#runtime::GUID)),
-        WinType::SystemTime => Some(quote!(#runtime::SYSTEMTIME)),
-        _ => None,
-    }
-}
-
-fn scalar_frag(w: &WinType, array: bool) -> Option<&'static str> {
-    let (single, multiple) = match w {
-        WinType::Int8 => ("c", "C"),
-        WinType::UInt8 => ("u", "U"),
-        WinType::Int16 => ("l", "L"),
-        WinType::UInt16 => ("h", "H"),
-        WinType::Int32 => ("d", "D"),
-        WinType::UInt32 | WinType::HexInt32 => ("q", "Q"),
-        WinType::Int64 => ("i", "I"),
-        WinType::UInt64 | WinType::HexInt64 => ("x", "X"),
-        WinType::FileTime => ("m", "M"),
-        WinType::Float => ("f", "F"),
-        WinType::Double => ("g", "G"),
-        WinType::Pointer => ("p", "P"),
-        WinType::Guid => ("j", "J"),
-        WinType::SystemTime => ("y", "Y"),
+    Some(match w {
+        WinType::Int8 => ("c", "C", quote!(i8)),
+        WinType::UInt8 => ("u", "U", quote!(u8)),
+        WinType::Int16 => ("l", "L", quote!(i16)),
+        WinType::UInt16 => ("h", "H", quote!(u16)),
+        WinType::Int32 => ("d", "D", quote!(i32)),
+        WinType::UInt32 | WinType::HexInt32 => ("q", "Q", quote!(u32)),
+        WinType::Int64 => ("i", "I", quote!(i64)),
+        WinType::UInt64 | WinType::HexInt64 => ("x", "X", quote!(u64)),
+        WinType::FileTime => ("m", "M", quote!(#runtime::FILETIME)),
+        WinType::Float => ("f", "F", quote!(f32)),
+        WinType::Double => ("g", "G", quote!(f64)),
+        WinType::Pointer => ("p", "P", quote!(usize)),
+        WinType::Guid => ("j", "J", quote!(#runtime::GUID)),
+        WinType::SystemTime => ("y", "Y", quote!(#runtime::SYSTEMTIME)),
         _ => return None,
-    };
-    Some(if array { multiple } else { single })
+    })
 }
 
 fn classify_single(w: &WinType, codegen: &CodegenContext) -> FieldSpec {
     let runtime = &codegen.runtime;
-    if let Some(ty) = scalar_rust_ty(w, codegen) {
+    if let Some((frag, _, rust_ty)) = scalar_info(w, codegen) {
         return FieldSpec {
-            frag: scalar_frag(w, false).expect("scalar type must have a fragment"),
-            rust_ty: ty,
+            frag,
+            rust_ty,
             class: FieldClass::Scalar,
         };
     }
@@ -1279,9 +1153,9 @@ fn classify(t: &crate::model::TypeInfo, codegen: &CodegenContext) -> FieldSpec {
         return classify_single(&t.win_type, codegen);
     }
 
-    if let Some(ty) = scalar_rust_ty(&t.win_type, codegen) {
+    if let Some((_, frag, ty)) = scalar_info(&t.win_type, codegen) {
         return FieldSpec {
-            frag: scalar_frag(&t.win_type, true).expect("scalar type must have a fragment"),
+            frag,
             rust_ty: quote!(&[#ty]),
             class: FieldClass::Slice,
         };
@@ -1512,7 +1386,7 @@ mod tests {
             .as_ref()
             .expect("expected a fixed-length temp");
         assert!(temp.to_string().contains("to_u16cstring_fixed_len"));
-        assert!(plans[0].call.to_string().starts_with("__f"));
+        assert!(plans[0].call.to_string().starts_with("__t"));
     }
 
     #[test]
@@ -1526,7 +1400,7 @@ mod tests {
         assert!(ty.to_string().contains("str"));
         let temp = plans[0].temp.as_ref().expect("expected a UTF-8 temp");
         assert!(temp.to_string().contains("to_cstring"));
-        assert!(plans[0].call.to_string().starts_with("__a"));
+        assert!(plans[0].call.to_string().starts_with("__t"));
     }
 
     #[test]
@@ -1568,7 +1442,7 @@ mod tests {
             .as_ref()
             .expect("expected a fixed-length ANSI temp");
         assert!(temp.to_string().contains("to_cstring_fixed_len"));
-        assert!(plans[0].call.to_string().starts_with("__af"));
+        assert!(plans[0].call.to_string().starts_with("__t"));
     }
 
     #[test]

@@ -147,6 +147,23 @@ fn resolve_provider(prov: &ProviderType, strings: &HashMap<String, String>) -> R
     })
 }
 
+/// Looks up an event attribute's named reference (`what` describes it in errors), defaulting to
+/// zero when the attribute is absent.
+fn lookup_or_default<T: Copy + Default>(
+    map: &HashMap<String, T>,
+    name: Option<&String>,
+    what: &str,
+    symbol: &str,
+) -> Result<T> {
+    match name {
+        Some(name) => map
+            .get(name)
+            .copied()
+            .ok_or_else(|| anyhow!("event {symbol} references undefined {what} {name:?}")),
+        None => Ok(T::default()),
+    }
+}
+
 fn resolve_event(
     ev: &EventDefinitionType,
     lookups: &ProviderLookupTables,
@@ -164,29 +181,10 @@ fn resolve_event(
         None => 0,
     };
 
-    let level = match &ev.level {
-        Some(name) => *lookups
-            .levels
-            .get(name)
-            .ok_or_else(|| anyhow!("event {symbol} references undefined level {name:?}"))?,
-        None => 0,
-    };
-
-    let opcode = match &ev.opcode {
-        Some(name) => *lookups
-            .opcodes
-            .get(name)
-            .ok_or_else(|| anyhow!("event {symbol} references undefined opcode {name:?}"))?,
-        None => 0,
-    };
-
-    let task = match &ev.task {
-        Some(name) => *lookups
-            .tasks
-            .get(name)
-            .ok_or_else(|| anyhow!("event {symbol} references undefined task {name:?}"))?,
-        None => 0,
-    };
+    let level = lookup_or_default(&lookups.levels, ev.level.as_ref(), "level", &symbol)?;
+    let opcode = lookup_or_default(&lookups.opcodes, ev.opcode.as_ref(), "opcode", &symbol)?;
+    let task = lookup_or_default(&lookups.tasks, ev.task.as_ref(), "task", &symbol)?;
+    let channel = lookup_or_default(&lookups.channels, ev.channel.as_ref(), "channel", &symbol)?;
 
     // A keyword is a space-separated list of names combined with bitwise OR
     let mut keyword = 0u64;
@@ -198,14 +196,6 @@ fn resolve_event(
                 .ok_or_else(|| anyhow!("event {symbol} references undefined keyword {name:?}"))?;
         }
     }
-
-    let channel = match &ev.channel {
-        Some(name) => *lookups
-            .channels
-            .get(name)
-            .ok_or_else(|| anyhow!("event {symbol} references undefined channel {name:?}"))?,
-        None => 0,
-    };
 
     let params = match &ev.template {
         Some(tid) => lookups
