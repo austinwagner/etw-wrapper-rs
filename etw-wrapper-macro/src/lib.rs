@@ -649,13 +649,19 @@ fn plan_string_value(
                 }
                 ElementLength::Implicit | ElementLength::Fixed(_) => TokenStream2::new(),
             };
-            Ok(accumulated_plan(field_index, id, ty, quote!(u8), |storage| {
-                quote! {
-                    #validate_len
-                    assert_eq!(value.last(), ::core::option::Option::Some(&0));
-                    #storage.extend_from_slice(value);
-                }
-            }))
+            Ok(accumulated_plan(
+                field_index,
+                id,
+                ty,
+                quote!(u8),
+                |storage| {
+                    quote! {
+                        #validate_len
+                        assert_eq!(value.last(), ::core::option::Option::Some(&0));
+                        #storage.extend_from_slice(value);
+                    }
+                },
+            ))
         }
     }
 }
@@ -687,9 +693,15 @@ fn plan_value_field(
                 return Ok(direct_field_plan(id, specs[field_index].rust_ty.clone()));
             }
             let ty = array_param_ty(quote!(bool), value.cardinality)?;
-            Ok(accumulated_plan(field_index, id, ty, quote!(i32), |storage| {
-                quote! { #storage.push(i32::from(*value)); }
-            }))
+            Ok(accumulated_plan(
+                field_index,
+                id,
+                ty,
+                quote!(i32),
+                |storage| {
+                    quote! { #storage.push(i32::from(*value)); }
+                },
+            ))
         }
         ValueKind::String { .. } => {
             plan_string_value(field_index, value, id, idents, specs, codegen)
@@ -715,9 +727,15 @@ fn plan_value_field(
                 }
                 ElementLength::FieldRef(_) => {
                     let ty = array_param_ty(quote!(&[u8]), value.cardinality)?;
-                    Ok(accumulated_plan(field_index, id, ty, quote!(u8), |storage| {
-                        quote! { #storage.extend_from_slice(value); }
-                    }))
+                    Ok(accumulated_plan(
+                        field_index,
+                        id,
+                        ty,
+                        quote!(u8),
+                        |storage| {
+                            quote! { #storage.extend_from_slice(value); }
+                        },
+                    ))
                 }
                 ElementLength::Implicit => {
                     anyhow::bail!("internal error: binary array has no element length")
@@ -729,9 +747,15 @@ fn plan_value_field(
                 return Ok(direct_field_plan(id, specs[field_index].rust_ty.clone()));
             }
             let ty = array_param_ty(quote!(&#runtime::field::Sid), value.cardinality)?;
-            Ok(accumulated_plan(field_index, id, ty, quote!(u8), |storage| {
-                quote! { #storage.extend_from_slice(value.as_bytes()); }
-            }))
+            Ok(accumulated_plan(
+                field_index,
+                id,
+                ty,
+                quote!(u8),
+                |storage| {
+                    quote! { #storage.extend_from_slice(value.as_bytes()); }
+                },
+            ))
         }
     }
 }
@@ -797,15 +821,8 @@ fn plan_event(
         let Count::FieldRef(name) = &field.count else {
             continue;
         };
-        let count_field = resolve_prior_int_field(
-            &index_by_name,
-            ev,
-            p,
-            index,
-            name,
-            "array field",
-            "count",
-        )?;
+        let count_field =
+            resolve_prior_int_field(&index_by_name, ev, p, index, name, "array field", "count")?;
 
         roles[count_field] = match roles[count_field].clone() {
             FieldRole::Value(_) => {
