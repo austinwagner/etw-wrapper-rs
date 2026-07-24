@@ -10,6 +10,14 @@ categories.workspace = true
 description = "Strongly typed Event Tracing for Windows (ETW) logger generation"
 documentation = "https://docs.rs/etw-wrapper"
 
+# This is a Windows-only crate, so build the docs against a Windows target rather than the
+# default Linux one. `--cfg docsrs` turns on the `doc_cfg` feature banners set up in lib.rs.
+[package.metadata.docs.rs]
+all-features = true
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc"]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 etw-wrapper-macro = { version = "0.1", optional = true, path = "../etw-wrapper-macro" }
 windows = { workspace = true }

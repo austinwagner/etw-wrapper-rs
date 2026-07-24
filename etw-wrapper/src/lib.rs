@@ -1,9 +1,13 @@
+// On docs.rs (which sets `--cfg docsrs`) opt into the nightly `doc_cfg` feature so items gated
+// behind a Cargo feature render an "Available on crate feature ..." banner in the docs.
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! A strongly typed Event Tracing for Windows wrapper.
 //!
 //! The `gen_etw_wrapper!` macro turns an ETW manifest into a strongly typed provider struct.
 //! See the examples directory for a basic demonstration.
 //!
-//! ```ignore
+//! ```no_run
 //! use etw_wrapper::{Result, gen_etw_wrapper};
 //!
 //! gen_etw_wrapper!("manifests/widgetservice.man", PROVIDER_WIDGETSERVICE -> WidgetLogger);
@@ -30,6 +34,7 @@
 //! ```
 
 #[cfg(feature = "macro")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macro")))]
 pub use etw_wrapper_macro::gen_etw_wrapper;
 
 // Gives generated code a stable path when the macro is invoked from this package's own targets.

@@ -1,16 +1,6 @@
-//! Generates strongly typed ETW wrappers from manifest files.
+//! Procedural macro implementation for `etw-wrapper`.
 //!
-//! When invoked with only a path, [`gen_etw_wrapper!`] names each wrapper after the provider
-//! symbol by converting it to `PascalCaseSymbolLogger`.
-//! ```text
-//! gen_etw_wrapper!("path/to/manifest.man");
-//! ```
-//!
-//! Wrapper names can be overridden by mapping the provider symbol to the desired name. If the
-//! provider symbol is not a valid Rust identifier, it must be provided as a string literal.
-//! ```text
-//! gen_etw_wrapper!("path/to/manifest.man", PROVIDER_WIDGETSERVICE -> WidgetLogger);
-//! ```
+//! See [`gen_etw_wrapper!`] for the supported syntax and generated API.
 
 mod eventman;
 mod model;
@@ -103,6 +93,89 @@ impl Parse for WrapperArgs {
     }
 }
 
+/// Generates strongly typed ETW providers from an instrumentation manifest.
+///
+/// Invoke this macro in item position with a path to an ETW manifest:
+///
+/// ```ignore
+/// use etw_wrapper::gen_etw_wrapper;
+///
+/// gen_etw_wrapper!("manifests/widgetservice.man");
+/// ```
+///
+/// The path is resolved relative to the invoking crate's `CARGO_MANIFEST_DIR`. Changes to the
+/// manifest are tracked by Cargo and cause the crate to be rebuilt.
+///
+/// # Generated API
+///
+/// The macro generates one public provider struct for each provider in the manifest. By default,
+/// its name is the provider's `symbol` converted to PascalCase with `Logger` appended. For example,
+/// `PROVIDER_WIDGETSERVICE` produces `ProviderWidgetserviceLogger`.
+///
+/// Each provider struct has:
+///
+/// - a `register()` associated function that registers the provider with ETW;
+/// - one snake_case method per manifest event, with parameters derived from the event template;
+/// - automatic provider unregistration when the value is dropped.
+///
+/// Event methods return [`etw_wrapper::Result<()>`](https://docs.rs/etw-wrapper/latest/etw_wrapper/type.Result.html).
+/// Manifest fields used as `length` or `count` references are derived from the corresponding
+/// slice and are omitted from the Rust method signature.
+///
+/// See the repository's
+/// [type mapping](https://github.com/austinwagner/etw-wrapper-rs#type-mapping) for the complete
+/// mapping from manifest `inType`, `length`, and `count` attributes to Rust parameter types.
+///
+/// # Naming providers
+///
+/// Map a provider symbol to a Rust identifier to override the generated struct name:
+///
+/// ```ignore
+/// # use etw_wrapper::gen_etw_wrapper;
+/// gen_etw_wrapper!(
+///     "manifests/widgetservice.man",
+///     PROVIDER_WIDGETSERVICE -> WidgetLogger,
+/// );
+/// ```
+///
+/// Quote a provider symbol when it is not a valid Rust identifier. A manifest with multiple
+/// providers may contain multiple comma-separated overrides:
+///
+/// ```ignore
+/// # use etw_wrapper::gen_etw_wrapper;
+/// gen_etw_wrapper!(
+///     "manifests/providers.man",
+///     "Contoso.WidgetService" -> WidgetLogger,
+///     PROVIDER_DATABASE -> DatabaseLogger,
+/// );
+/// ```
+///
+/// An override that does not match a provider symbol is a compile error.
+///
+/// # Example
+///
+/// Given a manifest that declares `PROVIDER_WIDGETSERVICE` with a `SERVICE_STARTED` event, an
+/// invocation can be used as follows:
+///
+/// ```ignore
+/// use etw_wrapper::{FILETIME, gen_etw_wrapper};
+///
+/// gen_etw_wrapper!(
+///     "manifests/widgetservice.man",
+///     PROVIDER_WIDGETSERVICE -> WidgetLogger,
+/// );
+///
+/// fn emit() -> etw_wrapper::Result<()> {
+///     let logger = WidgetLogger::register()?;
+///     logger.service_started("1.0.0", 8, FILETIME::default())
+/// }
+/// ```
+///
+/// # Provider resources
+///
+/// This macro emits events but does not compile or register the provider's message and metadata
+/// resource tables. Applications that need decoded event names, fields, and messages must compile
+/// and register those resources separately, for example with `mc.exe` and `wevtutil.exe`.
 #[proc_macro]
 pub fn gen_etw_wrapper(input: TokenStream) -> TokenStream {
     let args = syn::parse_macro_input!(input as WrapperArgs);
