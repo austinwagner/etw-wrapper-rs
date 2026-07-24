@@ -1,9 +1,9 @@
 //! A strongly typed Event Tracing for Windows wrapper.
 //!
-//! The [`gen_etw_wrapper!`] macro turns an ETW manifest into a strongly typed provider struct.
+//! The `gen_etw_wrapper!` macro turns an ETW manifest into a strongly typed provider struct.
 //! See the examples directory for a basic demonstration.
 //!
-//! ```no_run
+//! ```ignore
 //! use etw_wrapper::{Result, gen_etw_wrapper};
 //!
 //! gen_etw_wrapper!("manifests/widgetservice.man", PROVIDER_WIDGETSERVICE -> WidgetLogger);

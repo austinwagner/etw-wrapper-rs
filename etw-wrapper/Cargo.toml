@@ -19,6 +19,26 @@ safe-sid = { workspace = true }
 default = ["macro"]
 macro = ["dep:etw-wrapper-macro"]
 
+[[example]]
+name = "example"
+required-features = ["macro"]
+
+[[test]]
+name = "all_types"
+required-features = ["macro"]
+
+[[test]]
+name = "arrays"
+required-features = ["macro"]
+
+[[test]]
+name = "fieldref"
+required-features = ["macro"]
+
+[[test]]
+name = "hex"
+required-features = ["macro"]
+
 [dev-dependencies]
 windows = { workspace = true }
 
