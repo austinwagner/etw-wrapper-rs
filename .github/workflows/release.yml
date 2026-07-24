@@ -1,0 +1,126 @@
+name: Publish release
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crates-io
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release
+    if: ${{ github.event.release.prerelease == false }}
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup component add rustfmt clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy with default features
+        run: cargo clippy --workspace --locked --all-targets -- -D warnings
+
+      - name: Run Clippy with all features
+        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+
+      - name: Test with default features
+        run: cargo test --workspace --locked
+
+      - name: Test with all features
+        run: cargo test --workspace --locked --all-features
+
+  publish:
+    name: Publish to crates.io
+    needs:
+      - verify
+    runs-on: windows-latest
+    environment: crates-io
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Validate release
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $metadata = cargo metadata --locked --no-deps --format-version 1 |
+            ConvertFrom-Json
+          $runtimePackage = $metadata.packages |
+            Where-Object { $_.name -eq "etw-wrapper" }
+          $macroPackage = $metadata.packages |
+            Where-Object { $_.name -eq "etw-wrapper-macro" }
+
+          if ($null -eq $runtimePackage -or $null -eq $macroPackage) {
+            Write-Error "Could not determine the publishable package versions."
+          }
+
+          $packageVersion = $runtimePackage.version
+
+          if ($macroPackage.version -ne $packageVersion) {
+            Write-Error "The publishable packages must have the same version."
+          }
+
+          if ($packageVersion -match "[-+]") {
+            Write-Error "Only stable package versions can be published by this workflow."
+          }
+
+          if ($env:RELEASE_TAG -ne "v$packageVersion") {
+            Write-Error "Release tag '$env:RELEASE_TAG' does not match package version '$packageVersion'."
+          }
+
+          git merge-base --is-ancestor $env:GITHUB_SHA "origin/$env:DEFAULT_BRANCH"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "The release tag must point to a commit on '$env:DEFAULT_BRANCH'."
+          }
+
+      - name: Verify etw-wrapper-macro package
+        run: cargo publish --package etw-wrapper-macro --locked --dry-run
+
+      - name: Verify etw-wrapper package
+        run: cargo publish --package etw-wrapper --locked --dry-run
+
+      - name: Authenticate with crates.io
+        id: crates_io
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish etw-wrapper-macro
+        run: cargo publish --package etw-wrapper-macro --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io.outputs.token }}
+
+      - name: Publish etw-wrapper
+        run: cargo publish --package etw-wrapper --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io.outputs.token }}
