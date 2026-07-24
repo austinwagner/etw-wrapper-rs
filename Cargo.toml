@@ -5,10 +5,15 @@ members = [
     "etw-wrapper-macro",
     "test-crates/renamed-dependency",
 ]
+default-members = [
+    "etw-wrapper",
+    "etw-wrapper-macro",
+]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.88"
 license = "ISC"
 readme = "README.md"
 repository = "https://github.com/austinwagner/etw-wrapper-rs"
@@ -30,5 +35,5 @@ proc-macro2 = "1"
 proc-macro-crate = "3"
 convert_case = "0.11"
 unicode-ident = "1"
-safe-sid = "0.1"
+safe-sid = "0.2"
 

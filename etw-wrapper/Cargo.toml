@@ -2,6 +2,7 @@
 name = "etw-wrapper"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
@@ -19,7 +20,7 @@ targets = ["x86_64-pc-windows-msvc"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-etw-wrapper-macro = { version = "0.1", optional = true, path = "../etw-wrapper-macro" }
+etw-wrapper-macro = { version = "0.2", optional = true, path = "../etw-wrapper-macro" }
 windows = { workspace = true }
 safe-sid = { workspace = true }
 
@@ -49,4 +50,3 @@ required-features = ["macro"]
 
 [dev-dependencies]
 windows = { workspace = true }
-
