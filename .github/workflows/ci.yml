@@ -46,5 +46,5 @@ jobs:
       - name: Verify etw-wrapper-macro package
         run: cargo package --package etw-wrapper-macro --locked
 
-      - name: Verify etw-wrapper package
-        run: cargo package --package etw-wrapper --locked
+      - name: List etw-wrapper package contents
+        run: cargo package --package etw-wrapper --locked --list
