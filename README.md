@@ -65,6 +65,55 @@ If the provider symbol is not a valid Rust identifier, quote it:
 gen_etw_wrapper!("manifests/widgetservice.man", "Contoso.WidgetService" -> WidgetLogger);
 ```
 
+### Configuring event errors
+
+Generated event methods return `etw_wrapper::Result<()>` by default. Applications that treat
+logging as best-effort can configure event methods to return `()` and ignore errors encountered
+while preparing or writing an event:
+
+```rust
+gen_etw_wrapper!(
+    "manifests/widgetservice.man",
+    event_errors = ignore,
+    PROVIDER_WIDGETSERVICE -> WidgetLogger,
+);
+```
+
+This setting applies only to generated event methods. `WidgetLogger::register()` continues to
+return `etw_wrapper::Result<WidgetLogger>`.
+
+Event methods can also panic on invalid input, or on every error:
+
+```rust
+gen_etw_wrapper!(
+    "manifests/widgetservice.man",
+    event_errors = ignore,
+    event_panics = input,
+    event_panics_when = cfg(debug_assertions),
+    PROVIDER_WIDGETSERVICE -> WidgetLogger,
+);
+```
+
+`event_panics` accepts:
+
+| Value   | Behavior                                                               |
+|---------|------------------------------------------------------------------------|
+| `never` | Never panic on event errors. This is the default.                      |
+| `input` | Panic on errors detected while validating or preparing event fields.   |
+| `all`   | Panic on input errors and errors returned by the Windows event writer.  |
+
+Omit `event_panics_when` to enable the selected panic behavior in every build. When present, it
+accepts any Rust `cfg(...)` predicate:
+
+```rust
+event_panics_when = cfg(any(debug_assertions, feature = "strict-etw"))
+```
+
+The predicate is evaluated in the crate invoking the macro. When it is false, `event_errors`
+determines whether the error is returned or ignored. The generated method's return type depends
+only on `event_errors`, so it does not change between build configurations. Feature names used in
+the predicate must be declared by the crate invoking the macro.
+
 ### Emitting events
 
 Given this manifest template and event:

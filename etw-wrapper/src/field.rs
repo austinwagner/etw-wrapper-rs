@@ -111,6 +111,32 @@ pub fn ensure_len(actual: usize, expected: usize) -> crate::Result<()> {
     }
 }
 
+/// Validates that a string buffer ends with a NUL terminator.
+#[doc(hidden)]
+#[inline]
+pub fn ensure_nul_terminated(buf: &[u8]) -> crate::Result<()> {
+    if buf.last() == Some(&0) {
+        Ok(())
+    } else {
+        Err(windows::Win32::Foundation::ERROR_INVALID_DATA
+            .to_hresult()
+            .into())
+    }
+}
+
+/// Validates that a fixed string length has room for a NUL terminator.
+#[doc(hidden)]
+#[inline]
+pub fn ensure_nonzero_length(len: usize) -> crate::Result<()> {
+    if len > 0 {
+        Ok(())
+    } else {
+        Err(windows::Win32::Foundation::ERROR_INVALID_DATA
+            .to_hresult()
+            .into())
+    }
+}
+
 /// Creates a descriptor over a UTF-16 buffer (win:UnicodeString).
 ///
 /// # Panics
@@ -342,5 +368,14 @@ mod tests {
     fn ensure_len_rejects_mismatches() {
         assert!(ensure_len(3, 3).is_ok());
         assert!(ensure_len(2, 3).is_err());
+    }
+
+    #[test]
+    fn string_input_validation_rejects_invalid_buffers_and_lengths() {
+        assert!(ensure_nul_terminated(b"valid\0").is_ok());
+        assert!(ensure_nul_terminated(b"invalid").is_err());
+        assert!(ensure_nul_terminated(b"").is_err());
+        assert!(ensure_nonzero_length(1).is_ok());
+        assert!(ensure_nonzero_length(0).is_err());
     }
 }

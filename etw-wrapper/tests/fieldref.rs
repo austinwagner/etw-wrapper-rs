@@ -5,6 +5,25 @@ use etw_wrapper::gen_etw_wrapper;
 
 gen_etw_wrapper!("manifests/fieldref.man");
 
+mod input_panics {
+    use etw_wrapper::gen_etw_wrapper;
+
+    gen_etw_wrapper!(
+        "manifests/fieldref.man",
+        event_errors = ignore,
+        event_panics = input,
+        PROVIDER_FIELDREF -> InputPanicFieldrefLogger,
+    );
+
+    #[test]
+    #[should_panic(expected = "invalid input for ETW event `ANSI_NAMED`")]
+    fn malformed_caller_encoded_string_uses_the_input_policy() {
+        let logger = InputPanicFieldrefLogger::register().expect("provider registration failed");
+
+        logger.ansi_named(b"invalid!");
+    }
+}
+
 #[test]
 fn derives_length_field_from_blob() {
     let logger = ProviderFieldrefLogger::register().expect("provider registration failed");

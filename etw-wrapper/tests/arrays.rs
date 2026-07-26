@@ -5,6 +5,66 @@ use etw_wrapper::{FILETIME, GUID, SYSTEMTIME, gen_etw_wrapper};
 
 gen_etw_wrapper!("manifests/arrays.man");
 
+mod ignored_event_errors {
+    use etw_wrapper::gen_etw_wrapper;
+
+    gen_etw_wrapper!(
+        "manifests/arrays.man",
+        event_errors = ignore,
+        PROVIDER_ARRAYS -> BestEffortArraysLogger,
+    );
+
+    #[test]
+    fn event_methods_return_unit_while_registration_remains_fallible() {
+        let registration: etw_wrapper::Result<BestEffortArraysLogger> =
+            BestEffortArraysLogger::register();
+        let logger = registration.expect("provider registration failed");
+
+        let emitted: () = logger.variable_scalars(&[10, 20, 30, 40]);
+        assert_eq!(emitted, ());
+    }
+}
+
+mod input_panics {
+    use etw_wrapper::gen_etw_wrapper;
+
+    gen_etw_wrapper!(
+        "manifests/arrays.man",
+        event_errors = ignore,
+        event_panics = input,
+        PROVIDER_ARRAYS -> InputPanicArraysLogger,
+    );
+
+    #[test]
+    #[should_panic(expected = "invalid input for ETW event `SHARED_COUNT`")]
+    fn invalid_input_panics_even_when_the_provider_is_disabled() {
+        let logger = InputPanicArraysLogger::register().expect("provider registration failed");
+
+        logger.shared_count(&[10, 20], &[1]);
+    }
+}
+
+mod cfg_disabled_input_panics {
+    use etw_wrapper::gen_etw_wrapper;
+
+    gen_etw_wrapper!(
+        "manifests/arrays.man",
+        event_errors = ignore,
+        event_panics = input,
+        event_panics_when = cfg(any()),
+        PROVIDER_ARRAYS -> CfgDisabledPanicArraysLogger,
+    );
+
+    #[test]
+    fn cfg_disabled_panic_uses_the_ignore_fallback() {
+        let logger =
+            CfgDisabledPanicArraysLogger::register().expect("provider registration failed");
+
+        let emitted: () = logger.shared_count(&[10, 20], &[1]);
+        assert_eq!(emitted, ());
+    }
+}
+
 #[test]
 fn emits_fixed_scalar_arrays() {
     let logger = ProviderArraysLogger::register().expect("provider registration failed");

@@ -49,4 +49,4 @@ pub use context::EtwLogger;
 pub use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
 pub use windows::Win32::Security::PSID;
 pub use windows::Win32::System::Diagnostics::Etw::{EVENT_DATA_DESCRIPTOR, EVENT_DESCRIPTOR};
-pub use windows::core::{GUID, Result};
+pub use windows::core::{Error, GUID, Result};

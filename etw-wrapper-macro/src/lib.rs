@@ -15,13 +15,46 @@ use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, LitStr, Token};
+use syn::{Ident, LitStr, Meta, Token, parenthesized};
 use unicode_ident::{is_xid_continue, is_xid_start};
 
-/// The parsed macro input, including the manifest path and optional wrapper name overrides.
+/// The parsed macro input, including the manifest path, event error behavior, and optional
+/// wrapper name overrides.
 struct WrapperArgs {
     path: LitStr,
+    event_errors: EventErrors,
+    event_panics: EventPanics,
+    event_panics_when: Option<Meta>,
     overrides: Vec<NameOverride>,
+}
+
+/// How generated event methods expose errors to their callers.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum EventErrors {
+    /// Return the error to the caller as a `Result`.
+    #[default]
+    Propagate,
+    /// Deliberately discard errors from event preparation and writing.
+    Ignore,
+}
+
+/// Which event errors panic before applying the configured fallback.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum EventPanics {
+    /// Do not panic on event errors.
+    #[default]
+    Never,
+    /// Panic only on invalid caller input or event preparation errors.
+    Input,
+    /// Panic on both input and Windows event-write errors.
+    All,
+}
+
+#[derive(Clone, Copy)]
+struct EventPolicy<'a> {
+    errors: EventErrors,
+    panics: EventPanics,
+    panics_when: Option<&'a Meta>,
 }
 
 /// A `SYMBOL -> NewName` override. `key` is matched against a provider's
@@ -64,6 +97,11 @@ impl CodegenContext {
 impl Parse for WrapperArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let path: LitStr = input.parse()?;
+        let mut event_errors = EventErrors::default();
+        let mut event_errors_set = false;
+        let mut event_panics = EventPanics::default();
+        let mut event_panics_set = false;
+        let mut event_panics_when = None;
         let mut overrides = Vec::new();
 
         while input.peek(Token![,]) {
@@ -78,7 +116,85 @@ impl Parse for WrapperArgs {
                 (lit.value(), lit.span())
             } else {
                 let ident: Ident = input.parse()?;
-                (ident.to_string(), ident.span())
+                let key = ident.to_string();
+                let key_span = ident.span();
+
+                if input.peek(Token![=]) {
+                    input.parse::<Token![=]>()?;
+                    match key.as_str() {
+                        "event_errors" => {
+                            if event_errors_set {
+                                return Err(syn::Error::new(
+                                    key_span,
+                                    "duplicate `event_errors` option",
+                                ));
+                            }
+
+                            let value: Ident = input.parse()?;
+                            event_errors = match value.to_string().as_str() {
+                                "propagate" => EventErrors::Propagate,
+                                "ignore" => EventErrors::Ignore,
+                                _ => {
+                                    return Err(syn::Error::new(
+                                        value.span(),
+                                        "`event_errors` must be `propagate` or `ignore`",
+                                    ));
+                                }
+                            };
+                            event_errors_set = true;
+                        }
+                        "event_panics" => {
+                            if event_panics_set {
+                                return Err(syn::Error::new(
+                                    key_span,
+                                    "duplicate `event_panics` option",
+                                ));
+                            }
+
+                            let value: Ident = input.parse()?;
+                            event_panics = match value.to_string().as_str() {
+                                "never" => EventPanics::Never,
+                                "input" => EventPanics::Input,
+                                "all" => EventPanics::All,
+                                _ => {
+                                    return Err(syn::Error::new(
+                                        value.span(),
+                                        "`event_panics` must be `never`, `input`, or `all`",
+                                    ));
+                                }
+                            };
+                            event_panics_set = true;
+                        }
+                        "event_panics_when" => {
+                            if event_panics_when.is_some() {
+                                return Err(syn::Error::new(
+                                    key_span,
+                                    "duplicate `event_panics_when` option",
+                                ));
+                            }
+
+                            let cfg: Ident = input.parse()?;
+                            if cfg != "cfg" {
+                                return Err(syn::Error::new(
+                                    cfg.span(),
+                                    "`event_panics_when` must be a `cfg(...)` predicate",
+                                ));
+                            }
+                            let content;
+                            parenthesized!(content in input);
+                            event_panics_when = Some(content.parse()?);
+                        }
+                        _ => {
+                            return Err(syn::Error::new(
+                                key_span,
+                                format!("unknown gen_etw_wrapper option `{key}`"),
+                            ));
+                        }
+                    }
+                    continue;
+                }
+
+                (key, key_span)
             };
             input.parse::<Token![->]>()?;
             let name: Ident = input.parse()?;
@@ -89,7 +205,20 @@ impl Parse for WrapperArgs {
             });
         }
 
-        Ok(WrapperArgs { path, overrides })
+        if event_panics_when.is_some() && event_panics == EventPanics::Never {
+            return Err(syn::Error::new(
+                path.span(),
+                "`event_panics_when` requires `event_panics = input` or `event_panics = all`",
+            ));
+        }
+
+        Ok(WrapperArgs {
+            path,
+            event_errors,
+            event_panics,
+            event_panics_when,
+            overrides,
+        })
     }
 }
 
@@ -121,6 +250,30 @@ impl Parse for WrapperArgs {
 /// Event methods return [`etw_wrapper::Result<()>`](https://docs.rs/etw-wrapper/latest/etw_wrapper/type.Result.html).
 /// Manifest fields used as `length` or `count` references are derived from the corresponding
 /// slice and are omitted from the Rust method signature.
+///
+/// # Event errors
+///
+/// By default, event methods return `etw_wrapper::Result<()>`. Applications that treat logging as
+/// best-effort can generate event methods that return `()` and discard errors:
+///
+/// ```ignore
+/// # use etw_wrapper::gen_etw_wrapper;
+/// gen_etw_wrapper!(
+///     "manifests/widgetservice.man",
+///     event_errors = ignore,
+///     event_panics = input,
+///     event_panics_when = cfg(debug_assertions),
+/// );
+/// ```
+///
+/// `event_panics` accepts `never` (the default), `input`, or `all`. `input` covers errors detected
+/// while validating or preparing caller-provided values; `all` additionally covers errors returned
+/// by the Windows event-write call. `event_panics_when` accepts any Rust `cfg(...)` predicate and
+/// conditionally enables the selected panic behavior. When panicking is disabled, `event_errors`
+/// determines whether the error is returned or ignored. Only `event_errors` affects the generated
+/// method's return type.
+///
+/// This setting affects only event methods. Provider registration remains fallible.
 ///
 /// See the repository's
 /// [type mapping](https://github.com/austinwagner/etw-wrapper-rs#type-mapping) for the complete
@@ -198,6 +351,11 @@ fn impl_gen_etw_wrapper(args: &WrapperArgs) -> anyhow::Result<TokenStream2> {
     let path = resolve_path(&args.path.value());
     let manifest = model::load(&path)?;
     let codegen = CodegenContext::resolve()?;
+    let event_policy = EventPolicy {
+        errors: args.event_errors,
+        panics: args.event_panics,
+        panics_when: args.event_panics_when.as_ref(),
+    };
 
     // Map each override to its provider symbol
     let mut overrides: HashMap<&str, &Ident> = HashMap::new();
@@ -218,7 +376,14 @@ fn impl_gen_etw_wrapper(args: &WrapperArgs) -> anyhow::Result<TokenStream2> {
     let providers = manifest
         .providers
         .iter()
-        .map(|p| gen_provider(p, overrides.get(p.symbol.as_str()).copied(), &codegen))
+        .map(|p| {
+            gen_provider(
+                p,
+                overrides.get(p.symbol.as_str()).copied(),
+                event_policy,
+                &codegen,
+            )
+        })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     // Force a rebuild when the manifest file changes by using include_bytes so
@@ -246,6 +411,7 @@ fn resolve_path(raw: &str) -> PathBuf {
 fn gen_provider(
     p: &Provider,
     name_override: Option<&Ident>,
+    event_policy: EventPolicy<'_>,
     codegen: &CodegenContext,
 ) -> anyhow::Result<TokenStream2> {
     // The default name is the PascalCase provider symbol with a Logger suffix, an
@@ -271,7 +437,8 @@ fn gen_provider(
         backing
             .entry(helper.clone())
             .or_insert_with(|| gen_backing(&helper, &specs, codegen));
-        let (method_ident, method) = gen_event_method(ev, &specs, &helper, p, codegen)?;
+        let (method_ident, method) =
+            gen_event_method(ev, &specs, &helper, p, event_policy, codegen)?;
         if let Some(prev) = method_idents.insert(method_ident.clone(), ev.symbol.clone()) {
             anyhow::bail!(
                 "event name {} collides with {} in provider {} (both transform to: {})",
@@ -315,6 +482,8 @@ fn gen_provider(
 /// when a message placeholder (`%N`) refers to it.
 struct FieldPlan {
     param: Option<(Ident, TokenStream2)>,
+    /// Fallible checks that can run before the provider enablement fast path.
+    validation: Option<TokenStream2>,
     temp: Option<TokenStream2>,
     call: Ident,
     doc_ref: String,
@@ -529,6 +698,7 @@ fn direct_field_plan(id: Ident, ty: TokenStream2) -> FieldPlan {
     let doc_ref = id.to_string();
     FieldPlan {
         param: Some((id.clone(), ty)),
+        validation: None,
         temp: None,
         call: id,
         doc_ref,
@@ -541,10 +711,16 @@ fn buffered_plan(id: Ident, ty: TokenStream2, tmp: Ident, temp: TokenStream2) ->
     let doc_ref = id.to_string();
     FieldPlan {
         param: Some((id, ty)),
+        validation: None,
         temp: Some(temp),
         call: tmp,
         doc_ref,
     }
+}
+
+fn with_validation(mut plan: FieldPlan, validation: TokenStream2) -> FieldPlan {
+    plan.validation = Some(validation);
+    plan
 }
 
 /// Plans an array parameter whose elements are flattened into one contiguous buffer of `elem_ty`.
@@ -594,27 +770,43 @@ fn plan_string_value(
 
     if value.cardinality == Cardinality::Single {
         let Some((plain, fixed, elem_ty)) = encode_fns else {
-            return Ok(match length {
+            let plan = match length {
                 ElementLength::Fixed(length) => direct_field_plan(id, quote!(&[u8; #length])),
                 ElementLength::Implicit | ElementLength::FieldRef(_) => {
                     direct_field_plan(id, specs[field_index].rust_ty.clone())
                 }
-            });
+            };
+            let input = plan.call.clone();
+            return Ok(with_validation(
+                plan,
+                quote! {
+                    #runtime::field::ensure_nul_terminated(#input)?;
+                },
+            ));
         };
         let plain = format_ident!("{plain}");
         let fixed = format_ident!("{fixed}");
-        let encode = match length {
-            ElementLength::Fixed(length) => quote!(#runtime::field::#fixed(#id, #length)),
+        let (validation, encode) = match length {
+            ElementLength::Fixed(length) => (
+                Some(quote! {
+                    #runtime::field::ensure_nonzero_length(#length)?;
+                }),
+                quote!(#runtime::field::#fixed(#id, #length)),
+            ),
             // A referenced length on a scalar string keeps NUL-terminated behavior
             ElementLength::Implicit | ElementLength::FieldRef(_) => {
-                quote!(#runtime::field::#plain(#id))
+                (None, quote!(#runtime::field::#plain(#id)))
             }
         };
         let tmp = format_ident!("__t{}", field_index);
         let temp = quote! {
             let #tmp: &[#elem_ty] = &#encode;
         };
-        return Ok(buffered_plan(id, quote!(&str), tmp, temp));
+        let plan = buffered_plan(id, quote!(&str), tmp, temp);
+        return Ok(match validation {
+            Some(validation) => with_validation(plan, validation),
+            None => plan,
+        });
     }
 
     match encode_fns {
@@ -622,17 +814,31 @@ fn plan_string_value(
             let plain = format_ident!("{plain}");
             let fixed = format_ident!("{fixed}");
             let ty = array_param_ty(quote!(&str), value.cardinality)?;
-            let encode = match length {
-                ElementLength::Implicit => quote!(#runtime::field::#plain(value)),
-                ElementLength::Fixed(length) => quote!(#runtime::field::#fixed(value, #length)),
+            let (validation, encode) = match length {
+                ElementLength::Implicit => (None, quote!(#runtime::field::#plain(value))),
+                ElementLength::Fixed(length) => (
+                    Some(quote! {
+                        #runtime::field::ensure_nonzero_length(#length)?;
+                    }),
+                    quote!(#runtime::field::#fixed(value, #length)),
+                ),
                 ElementLength::FieldRef(from) => {
                     let length = &idents[from];
-                    quote!(#runtime::field::#fixed(value, #length as usize))
+                    (
+                        Some(quote! {
+                            #runtime::field::ensure_nonzero_length(#length as usize)?;
+                        }),
+                        quote!(#runtime::field::#fixed(value, #length as usize)),
+                    )
                 }
             };
-            Ok(accumulated_plan(field_index, id, ty, elem_ty, |storage| {
+            let plan = accumulated_plan(field_index, id, ty, elem_ty, |storage| {
                 quote! { #storage.extend_from_slice(&#encode); }
-            }))
+            });
+            Ok(match validation {
+                Some(validation) => with_validation(plan, validation),
+                None => plan,
+            })
         }
         None => {
             let element_ty = match length {
@@ -649,19 +855,19 @@ fn plan_string_value(
                 }
                 ElementLength::Implicit | ElementLength::Fixed(_) => TokenStream2::new(),
             };
-            Ok(accumulated_plan(
-                field_index,
-                id,
-                ty,
-                quote!(u8),
-                |storage| {
-                    quote! {
-                        #validate_len
-                        assert_eq!(value.last(), ::core::option::Option::Some(&0));
-                        #storage.extend_from_slice(value);
-                    }
-                },
-            ))
+            let input = id.clone();
+            let validation = quote! {
+                for value in #input {
+                    #validate_len
+                    #runtime::field::ensure_nul_terminated(value)?;
+                }
+            };
+            let plan = accumulated_plan(field_index, id, ty, quote!(u8), |storage| {
+                quote! {
+                    #storage.extend_from_slice(value);
+                }
+            });
+            Ok(with_validation(plan, validation))
         }
     }
 }
@@ -886,19 +1092,35 @@ fn plan_event(
                 let int_ty = specs[index].rust_ty.clone();
                 let blob = idents[*from].clone();
                 let source_is_array = Cardinality::from_count(&ev.params[*from].count).is_array();
-                let temp = if source_is_array {
-                    quote! {
-                        let #id: #int_ty =
-                            #runtime::field::checked_len(#runtime::field::uniform_len(#blob)?)?;
-                    }
+                let (validation, temp) = if source_is_array {
+                    (
+                        quote! {
+                            let _: #int_ty =
+                                #runtime::field::checked_len(
+                                    #runtime::field::uniform_len(#blob)?
+                                )?;
+                        },
+                        quote! {
+                            let #id: #int_ty =
+                                #runtime::field::checked_len(
+                                    #runtime::field::uniform_len(#blob)?
+                                )?;
+                        },
+                    )
                 } else {
-                    quote! {
-                        let #id: #int_ty = #runtime::field::checked_len(#blob.len())?;
-                    }
+                    (
+                        quote! {
+                            let _: #int_ty = #runtime::field::checked_len(#blob.len())?;
+                        },
+                        quote! {
+                            let #id: #int_ty = #runtime::field::checked_len(#blob.len())?;
+                        },
+                    )
                 };
                 let doc_ref = format!("{}.len", blob);
                 FieldPlan {
                     param: None,
+                    validation: Some(validation),
                     temp: Some(temp),
                     call: id,
                     doc_ref,
@@ -910,12 +1132,20 @@ fn plan_event(
                     .ok_or_else(|| anyhow::anyhow!("internal error: array count has no source"))?;
                 let int_ty = specs[index].rust_ty.clone();
                 let array = idents[first].clone();
-                let matching_lengths = from.iter().skip(1).map(|source| {
-                    let other = &idents[*source];
-                    quote! {
-                        #runtime::field::ensure_len(#other.len(), #array.len())?;
-                    }
-                });
+                let matching_lengths: Vec<_> = from
+                    .iter()
+                    .skip(1)
+                    .map(|source| {
+                        let other = &idents[*source];
+                        quote! {
+                            #runtime::field::ensure_len(#other.len(), #array.len())?;
+                        }
+                    })
+                    .collect();
+                let validation = quote! {
+                    #(#matching_lengths)*
+                    let _: #int_ty = #runtime::field::checked_len(#array.len())?;
+                };
                 let temp = quote! {
                     #(#matching_lengths)*
                     let #id: #int_ty = #runtime::field::checked_len(#array.len())?;
@@ -923,6 +1153,7 @@ fn plan_event(
                 let doc_ref = format!("{}.len", array);
                 FieldPlan {
                     param: None,
+                    validation: Some(validation),
                     temp: Some(temp),
                     call: id,
                     doc_ref,
@@ -1030,11 +1261,53 @@ fn push_escaped_markdown(out: &mut String, ch: char) {
     out.push(ch);
 }
 
+fn event_error_fallback(event_errors: EventErrors, runtime: &TokenStream2) -> TokenStream2 {
+    match event_errors {
+        EventErrors::Propagate => quote! {
+            #runtime::Result::Err(__error)
+        },
+        EventErrors::Ignore => quote! {
+            ::core::mem::drop(__error);
+        },
+    }
+}
+
+fn event_error_handler(
+    should_panic: bool,
+    event_panics_when: Option<&Meta>,
+    panic_message: &str,
+    fallback: &TokenStream2,
+) -> TokenStream2 {
+    if !should_panic {
+        return fallback.clone();
+    }
+
+    let panic = quote! {
+        ::core::panic!(#panic_message, __error)
+    };
+    match event_panics_when {
+        Some(predicate) => quote! {
+            {
+                #[cfg(#predicate)]
+                {
+                    #panic
+                }
+                #[cfg(not(#predicate))]
+                {
+                    #fallback
+                }
+            }
+        },
+        None => panic,
+    }
+}
+
 fn gen_event_method(
     ev: &Event,
     specs: &[FieldSpec],
     helper: &str,
     p: &Provider,
+    event_policy: EventPolicy<'_>,
     codegen: &CodegenContext,
 ) -> anyhow::Result<(String, TokenStream2)> {
     let method_ident_str = safe_ident(&ccase!(snake, &ev.symbol));
@@ -1043,13 +1316,17 @@ fn gen_event_method(
 
     let plans = plan_event(ev, p, specs, codegen)?;
 
-    let params = plans
+    let params: Vec<_> = plans
         .iter()
-        .filter_map(|fp| fp.param.as_ref().map(|(id, ty)| quote! { #id: #ty }));
+        .filter_map(|fp| fp.param.as_ref().map(|(id, ty)| quote! { #id: #ty }))
+        .collect();
 
-    let temps = plans.iter().filter_map(|fp| fp.temp.as_ref());
-
-    let call_args = plans.iter().map(|fp| &fp.call);
+    let validations: Vec<_> = plans
+        .iter()
+        .filter_map(|fp| fp.validation.as_ref())
+        .collect();
+    let temps: Vec<_> = plans.iter().filter_map(|fp| fp.temp.as_ref()).collect();
+    let call_args: Vec<_> = plans.iter().map(|fp| &fp.call).collect();
 
     let (id, version, channel, level, opcode) =
         (ev.id, ev.version, ev.channel, ev.level, ev.opcode);
@@ -1058,31 +1335,124 @@ fn gen_event_method(
     let field_refs: Vec<String> = plans.iter().map(|fp| fp.doc_ref.clone()).collect();
     let doc = event_doc(ev, &field_refs);
     let runtime = &codegen.runtime;
+    let event_symbol = &ev.symbol;
 
-    Ok((
-        method_ident_str,
-        quote! {
+    let prevalidation = if !validations.is_empty()
+        && matches!(event_policy.panics, EventPanics::Input | EventPanics::All)
+    {
+        let validate = quote! {
+            if let #runtime::Result::Err(__error) = (|| -> #runtime::Result<()> {
+                #(#validations)*
+                #runtime::Result::Ok(())
+            })() {
+                ::core::panic!(
+                    "invalid input for ETW event `{}`: {}",
+                    #event_symbol,
+                    __error
+                );
+            }
+        };
+        match event_policy.panics_when {
+            Some(predicate) => quote! {
+                #[cfg(#predicate)]
+                #validate
+            },
+            None => validate,
+        }
+    } else {
+        TokenStream2::new()
+    };
+
+    let outcome = quote! {
+        enum __EtwEventError {
+            Input(#runtime::Error),
+            Write(#runtime::Error),
+        }
+
+        impl ::core::convert::From<#runtime::Error> for __EtwEventError {
+            fn from(error: #runtime::Error) -> Self {
+                Self::Input(error)
+            }
+        }
+
+        let __outcome: ::core::result::Result<(), __EtwEventError> = (|| {
+            const DESC: #runtime::EVENT_DESCRIPTOR =
+                #runtime::EVENT_DESCRIPTOR {
+                    Id: #id,
+                    Version: #version,
+                    Channel: #channel,
+                    Level: #level,
+                    Opcode: #opcode,
+                    Task: #task,
+                    Keyword: #keyword,
+                };
+            if !self.ctx.enabled(#level, #keyword) {
+                return ::core::result::Result::Ok(());
+            }
+            #(#validations)*
+            #(#temps)*
+            self.#helper(&DESC, #(#call_args),*)
+                .map_err(__EtwEventError::Write)
+        })();
+    };
+
+    let fallback = event_error_fallback(event_policy.errors, runtime);
+    let input_message = format!("invalid input for ETW event `{event_symbol}`: {{}}");
+    let write_message = format!("failed to write ETW event `{event_symbol}`: {{}}");
+    let input_handler = event_error_handler(
+        matches!(event_policy.panics, EventPanics::Input | EventPanics::All),
+        event_policy.panics_when,
+        &input_message,
+        &fallback,
+    );
+    let write_handler = event_error_handler(
+        event_policy.panics == EventPanics::All,
+        event_policy.panics_when,
+        &write_message,
+        &fallback,
+    );
+    let success = match event_policy.errors {
+        EventErrors::Propagate => quote! { #runtime::Result::Ok(()) },
+        EventErrors::Ignore => quote! {},
+    };
+    let handle_outcome = quote! {
+        match __outcome {
+            ::core::result::Result::Ok(()) => {
+                #success
+            }
+            ::core::result::Result::Err(__EtwEventError::Input(__error)) => {
+                #input_handler
+            }
+            ::core::result::Result::Err(__EtwEventError::Write(__error)) => {
+                #write_handler
+            }
+        }
+    };
+
+    let method = match event_policy.errors {
+        EventErrors::Propagate => quote! {
             #doc
             #[allow(clippy::too_many_arguments)]
             pub fn #method(&self, #(#params),*) -> #runtime::Result<()> {
-                const DESC: #runtime::EVENT_DESCRIPTOR =
-                    #runtime::EVENT_DESCRIPTOR {
-                        Id: #id,
-                        Version: #version,
-                        Channel: #channel,
-                        Level: #level,
-                        Opcode: #opcode,
-                        Task: #task,
-                        Keyword: #keyword,
-                    };
-                if !self.ctx.enabled(#level, #keyword) {
-                    return #runtime::Result::Ok(());
-                }
-                #(#temps)*
-                self.#helper(&DESC, #(#call_args),*)
+                #prevalidation
+                #outcome
+                #handle_outcome
             }
         },
-    ))
+        EventErrors::Ignore => quote! {
+            #doc
+            ///
+            /// Errors not configured to panic are ignored.
+            #[allow(clippy::too_many_arguments)]
+            pub fn #method(&self, #(#params),*) {
+                #prevalidation
+                #outcome
+                #handle_outcome
+            }
+        },
+    };
+
+    Ok((method_ident_str, method))
 }
 
 /// Builds a shared helper function of the form
@@ -1333,6 +1703,82 @@ mod tests {
     use crate::model::{Event, Length, Provider, TypeInfo, WinType};
 
     #[test]
+    fn wrapper_args_default_to_propagating_event_errors() {
+        let args: WrapperArgs = syn::parse_str(r#""manifest.man", PROVIDER -> Logger"#).unwrap();
+
+        assert_eq!(args.event_errors, EventErrors::Propagate);
+        assert_eq!(args.overrides.len(), 1);
+    }
+
+    #[test]
+    fn wrapper_args_parse_ignored_event_errors() {
+        let args: WrapperArgs =
+            syn::parse_str(r#""manifest.man", event_errors = ignore, PROVIDER -> Logger"#).unwrap();
+
+        assert_eq!(args.event_errors, EventErrors::Ignore);
+        assert_eq!(args.event_panics, EventPanics::Never);
+        assert_eq!(args.overrides.len(), 1);
+    }
+
+    #[test]
+    fn wrapper_args_reject_invalid_or_duplicate_event_errors() {
+        let invalid = syn::parse_str::<WrapperArgs>(r#""manifest.man", event_errors = discard"#)
+            .err()
+            .expect("invalid option value should fail");
+        assert!(
+            invalid
+                .to_string()
+                .contains("must be `propagate` or `ignore`")
+        );
+
+        let duplicate = syn::parse_str::<WrapperArgs>(
+            r#""manifest.man", event_errors = ignore, event_errors = propagate"#,
+        )
+        .err()
+        .expect("duplicate option should fail");
+        assert!(
+            duplicate
+                .to_string()
+                .contains("duplicate `event_errors` option")
+        );
+    }
+
+    #[test]
+    fn wrapper_args_parse_cfg_gated_input_panics() {
+        let args: WrapperArgs = syn::parse_str(
+            r#""manifest.man",
+                event_errors = ignore,
+                event_panics = input,
+                event_panics_when = cfg(any(debug_assertions, feature = "strict-etw"))"#,
+        )
+        .unwrap();
+
+        assert_eq!(args.event_panics, EventPanics::Input);
+        let predicate = args
+            .event_panics_when
+            .expect("cfg predicate should be retained");
+        assert_eq!(
+            quote!(#predicate).to_string(),
+            quote!(any(debug_assertions, feature = "strict-etw")).to_string()
+        );
+    }
+
+    #[test]
+    fn wrapper_args_reject_panic_cfg_without_panic_scope() {
+        let error = syn::parse_str::<WrapperArgs>(
+            r#""manifest.man", event_panics_when = cfg(debug_assertions)"#,
+        )
+        .err()
+        .expect("a panic predicate without a panic scope should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires `event_panics = input` or `event_panics = all`")
+        );
+    }
+
+    #[test]
     fn safe_ident_transforms() {
         // Ordinary identifiers pass through untouched
         assert_eq!(safe_ident("version"), "version");
@@ -1381,12 +1827,103 @@ mod tests {
             guid: 0,
             events: vec![],
         };
-        let (_, ts) = gen_event_method(&e, &specs, "__write_q", &p, &codegen).unwrap();
+        let (_, ts) = gen_event_method(
+            &e,
+            &specs,
+            "__write_q",
+            &p,
+            EventPolicy {
+                errors: EventErrors::Propagate,
+                panics: EventPanics::Never,
+                panics_when: None,
+            },
+            &codegen,
+        )
+        .unwrap();
         let rendered = ts.to_string();
         // The summary line and resolved message become "#[doc = ...]" attributes
         // with "%1" rewritten to the parameter name
         assert!(rendered.contains("Writes the"));
         assert!(rendered.contains("Hello {a} world"));
+    }
+
+    #[test]
+    fn ignored_event_errors_generate_unit_returning_method() {
+        let e = event(vec![("A", WinType::UInt32)]);
+        let codegen = CodegenContext::canonical();
+        let specs: Vec<_> = e.params.iter().map(|t| classify(t, &codegen)).collect();
+        let p = Provider {
+            symbol: "P".into(),
+            guid: 0,
+            events: vec![],
+        };
+
+        let (_, ts) = gen_event_method(
+            &e,
+            &specs,
+            "__write_q",
+            &p,
+            EventPolicy {
+                errors: EventErrors::Ignore,
+                panics: EventPanics::Never,
+                panics_when: None,
+            },
+            &codegen,
+        )
+        .unwrap();
+        let rendered = ts.to_string();
+
+        assert!(rendered.contains("pub fn e"));
+        assert!(rendered.contains("core :: mem :: drop"));
+        assert!(rendered.contains("Errors not configured to panic are ignored"));
+    }
+
+    #[test]
+    fn panic_policy_distinguishes_input_and_write_errors() {
+        let e = event(vec![("A", WinType::UInt32)]);
+        let codegen = CodegenContext::canonical();
+        let specs: Vec<_> = e.params.iter().map(|t| classify(t, &codegen)).collect();
+        let p = Provider {
+            symbol: "P".into(),
+            guid: 0,
+            events: vec![],
+        };
+        let predicate: Meta = syn::parse_str("debug_assertions").unwrap();
+
+        let (_, ts) = gen_event_method(
+            &e,
+            &specs,
+            "__write_q",
+            &p,
+            EventPolicy {
+                errors: EventErrors::Ignore,
+                panics: EventPanics::Input,
+                panics_when: Some(&predicate),
+            },
+            &codegen,
+        )
+        .unwrap();
+        let rendered = ts.to_string();
+
+        assert!(rendered.contains("invalid input for ETW event"));
+        assert!(!rendered.contains("failed to write ETW event"));
+        assert!(rendered.contains("cfg (debug_assertions)"));
+        assert!(rendered.contains("cfg (not (debug_assertions))"));
+
+        let (_, all) = gen_event_method(
+            &e,
+            &specs,
+            "__write_q",
+            &p,
+            EventPolicy {
+                errors: EventErrors::Ignore,
+                panics: EventPanics::All,
+                panics_when: None,
+            },
+            &codegen,
+        )
+        .unwrap();
+        assert!(all.to_string().contains("failed to write ETW event"));
     }
 
     #[test]
