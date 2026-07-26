@@ -88,31 +88,34 @@ Event methods can also panic on invalid input, or on every error:
 gen_etw_wrapper!(
     "manifests/widgetservice.man",
     event_errors = ignore,
-    event_panics = input,
-    event_panics_when = cfg(debug_assertions),
+    event_panics_on_input = true,
+    event_panics_on_input_when = cfg(debug_assertions),
     PROVIDER_WIDGETSERVICE -> WidgetLogger,
 );
 ```
 
-`event_panics` accepts:
+Input and Windows write failures are configured independently:
 
-| Value   | Behavior                                                               |
-|---------|------------------------------------------------------------------------|
-| `never` | Never panic on event errors. This is the default.                      |
-| `input` | Panic on errors detected while validating or preparing event fields.   |
-| `all`   | Panic on input errors and errors returned by the Windows event writer.  |
+| Option                    | Errors covered                                                          |
+|---------------------------|-------------------------------------------------------------------------|
+| `event_panics_on_input`   | Errors detected while validating or preparing caller-provided fields.   |
+| `event_panics_on_write`   | Errors returned by the Windows event writer.                             |
 
-Omit `event_panics_when` to enable the selected panic behavior in every build. When present, it
-accepts any Rust `cfg(...)` predicate:
+Both options default to `false`. Each has a corresponding `_when` option that accepts any Rust
+`cfg(...)` predicate:
 
 ```rust
-event_panics_when = cfg(any(debug_assertions, feature = "strict-etw"))
+event_panics_on_input = true,
+event_panics_on_input_when = cfg(debug_assertions),
+event_panics_on_write = true,
+event_panics_on_write_when = cfg(feature = "strict-etw"),
 ```
 
-The predicate is evaluated in the crate invoking the macro. When it is false, `event_errors`
-determines whether the error is returned or ignored. The generated method's return type depends
-only on `event_errors`, so it does not change between build configurations. Feature names used in
-the predicate must be declared by the crate invoking the macro.
+Omitting a corresponding `_when` predicate makes that panic behavior unconditional. Predicates are
+evaluated in the crate invoking the macro. When one is false, `event_errors` determines whether
+that category of error is returned or ignored. The generated method's return type depends only on
+`event_errors`, so it does not change between build configurations. Feature names used in a
+predicate must be declared by the crate invoking the macro.
 
 ### Emitting events
 

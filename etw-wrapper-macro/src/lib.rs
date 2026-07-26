@@ -15,7 +15,7 @@ use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, LitStr, Meta, Token, parenthesized};
+use syn::{Ident, LitBool, LitStr, Meta, Token, parenthesized};
 use unicode_ident::{is_xid_continue, is_xid_start};
 
 /// The parsed macro input, including the manifest path, event error behavior, and optional
@@ -23,8 +23,8 @@ use unicode_ident::{is_xid_continue, is_xid_start};
 struct WrapperArgs {
     path: LitStr,
     event_errors: EventErrors,
-    event_panics: EventPanics,
-    event_panics_when: Option<Meta>,
+    input_panics: PanicConfig,
+    write_panics: PanicConfig,
     overrides: Vec<NameOverride>,
 }
 
@@ -38,23 +38,23 @@ enum EventErrors {
     Ignore,
 }
 
-/// Which event errors panic before applying the configured fallback.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum EventPanics {
-    /// Do not panic on event errors.
-    #[default]
-    Never,
-    /// Panic only on invalid caller input or event preparation errors.
-    Input,
-    /// Panic on both input and Windows event-write errors.
-    All,
+#[derive(Default)]
+struct PanicConfig {
+    enabled: bool,
+    when: Option<Meta>,
+}
+
+#[derive(Clone, Copy)]
+struct PanicPolicy<'a> {
+    enabled: bool,
+    when: Option<&'a Meta>,
 }
 
 #[derive(Clone, Copy)]
 struct EventPolicy<'a> {
     errors: EventErrors,
-    panics: EventPanics,
-    panics_when: Option<&'a Meta>,
+    input_panics: PanicPolicy<'a>,
+    write_panics: PanicPolicy<'a>,
 }
 
 /// A `SYMBOL -> NewName` override. `key` is matched against a provider's
@@ -94,14 +94,30 @@ impl CodegenContext {
     }
 }
 
+fn parse_cfg_predicate(input: ParseStream, option: &str) -> syn::Result<Meta> {
+    let cfg: Ident = input.parse()?;
+    if cfg != "cfg" {
+        return Err(syn::Error::new(
+            cfg.span(),
+            format!("`{option}` must be a `cfg(...)` predicate"),
+        ));
+    }
+    let content;
+    parenthesized!(content in input);
+    content.parse()
+}
+
 impl Parse for WrapperArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let path: LitStr = input.parse()?;
         let mut event_errors = EventErrors::default();
         let mut event_errors_set = false;
-        let mut event_panics = EventPanics::default();
-        let mut event_panics_set = false;
-        let mut event_panics_when = None;
+        let mut input_panics = PanicConfig::default();
+        let mut input_panics_set = false;
+        let mut input_panics_when_set = false;
+        let mut write_panics = PanicConfig::default();
+        let mut write_panics_set = false;
+        let mut write_panics_when_set = false;
         let mut overrides = Vec::new();
 
         while input.peek(Token![,]) {
@@ -143,46 +159,51 @@ impl Parse for WrapperArgs {
                             };
                             event_errors_set = true;
                         }
-                        "event_panics" => {
-                            if event_panics_set {
+                        "event_panics_on_input" => {
+                            if input_panics_set {
                                 return Err(syn::Error::new(
                                     key_span,
-                                    "duplicate `event_panics` option",
+                                    "duplicate `event_panics_on_input` option",
                                 ));
                             }
 
-                            let value: Ident = input.parse()?;
-                            event_panics = match value.to_string().as_str() {
-                                "never" => EventPanics::Never,
-                                "input" => EventPanics::Input,
-                                "all" => EventPanics::All,
-                                _ => {
-                                    return Err(syn::Error::new(
-                                        value.span(),
-                                        "`event_panics` must be `never`, `input`, or `all`",
-                                    ));
-                                }
-                            };
-                            event_panics_set = true;
+                            input_panics.enabled = input.parse::<LitBool>()?.value;
+                            input_panics_set = true;
                         }
-                        "event_panics_when" => {
-                            if event_panics_when.is_some() {
+                        "event_panics_on_input_when" => {
+                            if input_panics_when_set {
                                 return Err(syn::Error::new(
                                     key_span,
-                                    "duplicate `event_panics_when` option",
+                                    "duplicate `event_panics_on_input_when` option",
                                 ));
                             }
 
-                            let cfg: Ident = input.parse()?;
-                            if cfg != "cfg" {
+                            input_panics.when =
+                                Some(parse_cfg_predicate(input, "event_panics_on_input_when")?);
+                            input_panics_when_set = true;
+                        }
+                        "event_panics_on_write" => {
+                            if write_panics_set {
                                 return Err(syn::Error::new(
-                                    cfg.span(),
-                                    "`event_panics_when` must be a `cfg(...)` predicate",
+                                    key_span,
+                                    "duplicate `event_panics_on_write` option",
                                 ));
                             }
-                            let content;
-                            parenthesized!(content in input);
-                            event_panics_when = Some(content.parse()?);
+
+                            write_panics.enabled = input.parse::<LitBool>()?.value;
+                            write_panics_set = true;
+                        }
+                        "event_panics_on_write_when" => {
+                            if write_panics_when_set {
+                                return Err(syn::Error::new(
+                                    key_span,
+                                    "duplicate `event_panics_on_write_when` option",
+                                ));
+                            }
+
+                            write_panics.when =
+                                Some(parse_cfg_predicate(input, "event_panics_on_write_when")?);
+                            write_panics_when_set = true;
                         }
                         _ => {
                             return Err(syn::Error::new(
@@ -205,18 +226,24 @@ impl Parse for WrapperArgs {
             });
         }
 
-        if event_panics_when.is_some() && event_panics == EventPanics::Never {
+        if input_panics.when.is_some() && !input_panics.enabled {
             return Err(syn::Error::new(
                 path.span(),
-                "`event_panics_when` requires `event_panics = input` or `event_panics = all`",
+                "`event_panics_on_input_when` requires `event_panics_on_input = true`",
+            ));
+        }
+        if write_panics.when.is_some() && !write_panics.enabled {
+            return Err(syn::Error::new(
+                path.span(),
+                "`event_panics_on_write_when` requires `event_panics_on_write = true`",
             ));
         }
 
         Ok(WrapperArgs {
             path,
             event_errors,
-            event_panics,
-            event_panics_when,
+            input_panics,
+            write_panics,
             overrides,
         })
     }
@@ -261,17 +288,16 @@ impl Parse for WrapperArgs {
 /// gen_etw_wrapper!(
 ///     "manifests/widgetservice.man",
 ///     event_errors = ignore,
-///     event_panics = input,
-///     event_panics_when = cfg(debug_assertions),
+///     event_panics_on_input = true,
+///     event_panics_on_input_when = cfg(debug_assertions),
 /// );
 /// ```
 ///
-/// `event_panics` accepts `never` (the default), `input`, or `all`. `input` covers errors detected
-/// while validating or preparing caller-provided values; `all` additionally covers errors returned
-/// by the Windows event-write call. `event_panics_when` accepts any Rust `cfg(...)` predicate and
-/// conditionally enables the selected panic behavior. When panicking is disabled, `event_errors`
-/// determines whether the error is returned or ignored. Only `event_errors` affects the generated
-/// method's return type.
+/// `event_panics_on_input` covers errors detected while validating or preparing caller-provided
+/// values. `event_panics_on_write` covers errors returned by the Windows event-write call. Both
+/// default to `false`, and each has a corresponding `_when` option that accepts any Rust `cfg(...)`
+/// predicate. When a panic behavior is disabled, `event_errors` determines whether the error is
+/// returned or ignored. Only `event_errors` affects the generated method's return type.
 ///
 /// This setting affects only event methods. Provider registration remains fallible.
 ///
@@ -353,8 +379,14 @@ fn impl_gen_etw_wrapper(args: &WrapperArgs) -> anyhow::Result<TokenStream2> {
     let codegen = CodegenContext::resolve()?;
     let event_policy = EventPolicy {
         errors: args.event_errors,
-        panics: args.event_panics,
-        panics_when: args.event_panics_when.as_ref(),
+        input_panics: PanicPolicy {
+            enabled: args.input_panics.enabled,
+            when: args.input_panics.when.as_ref(),
+        },
+        write_panics: PanicPolicy {
+            enabled: args.write_panics.enabled,
+            when: args.write_panics.when.as_ref(),
+        },
     };
 
     // Map each override to its provider symbol
@@ -1274,7 +1306,7 @@ fn event_error_fallback(event_errors: EventErrors, runtime: &TokenStream2) -> To
 
 fn event_error_handler(
     should_panic: bool,
-    event_panics_when: Option<&Meta>,
+    panic_when: Option<&Meta>,
     panic_message: &str,
     fallback: &TokenStream2,
 ) -> TokenStream2 {
@@ -1285,7 +1317,7 @@ fn event_error_handler(
     let panic = quote! {
         ::core::panic!(#panic_message, __error)
     };
-    match event_panics_when {
+    match panic_when {
         Some(predicate) => quote! {
             {
                 #[cfg(#predicate)]
@@ -1337,9 +1369,7 @@ fn gen_event_method(
     let runtime = &codegen.runtime;
     let event_symbol = &ev.symbol;
 
-    let prevalidation = if !validations.is_empty()
-        && matches!(event_policy.panics, EventPanics::Input | EventPanics::All)
-    {
+    let prevalidation = if !validations.is_empty() && event_policy.input_panics.enabled {
         let validate = quote! {
             if let #runtime::Result::Err(__error) = (|| -> #runtime::Result<()> {
                 #(#validations)*
@@ -1352,7 +1382,7 @@ fn gen_event_method(
                 );
             }
         };
-        match event_policy.panics_when {
+        match event_policy.input_panics.when {
             Some(predicate) => quote! {
                 #[cfg(#predicate)]
                 #validate
@@ -1400,14 +1430,14 @@ fn gen_event_method(
     let input_message = format!("invalid input for ETW event `{event_symbol}`: {{}}");
     let write_message = format!("failed to write ETW event `{event_symbol}`: {{}}");
     let input_handler = event_error_handler(
-        matches!(event_policy.panics, EventPanics::Input | EventPanics::All),
-        event_policy.panics_when,
+        event_policy.input_panics.enabled,
+        event_policy.input_panics.when,
         &input_message,
         &fallback,
     );
     let write_handler = event_error_handler(
-        event_policy.panics == EventPanics::All,
-        event_policy.panics_when,
+        event_policy.write_panics.enabled,
+        event_policy.write_panics.when,
         &write_message,
         &fallback,
     );
@@ -1716,7 +1746,8 @@ mod tests {
             syn::parse_str(r#""manifest.man", event_errors = ignore, PROVIDER -> Logger"#).unwrap();
 
         assert_eq!(args.event_errors, EventErrors::Ignore);
-        assert_eq!(args.event_panics, EventPanics::Never);
+        assert!(!args.input_panics.enabled);
+        assert!(!args.write_panics.enabled);
         assert_eq!(args.overrides.len(), 1);
     }
 
@@ -1744,37 +1775,51 @@ mod tests {
     }
 
     #[test]
-    fn wrapper_args_parse_cfg_gated_input_panics() {
+    fn wrapper_args_parse_independently_gated_panics() {
         let args: WrapperArgs = syn::parse_str(
             r#""manifest.man",
                 event_errors = ignore,
-                event_panics = input,
-                event_panics_when = cfg(any(debug_assertions, feature = "strict-etw"))"#,
+                event_panics_on_input = true,
+                event_panics_on_input_when = cfg(debug_assertions),
+                event_panics_on_write = true,
+                event_panics_on_write_when = cfg(feature = "strict-etw")"#,
         )
         .unwrap();
 
-        assert_eq!(args.event_panics, EventPanics::Input);
-        let predicate = args
-            .event_panics_when
-            .expect("cfg predicate should be retained");
+        assert!(args.input_panics.enabled);
+        assert!(args.write_panics.enabled);
+        let input = args
+            .input_panics
+            .when
+            .expect("input cfg predicate should be retained");
+        let write = args
+            .write_panics
+            .when
+            .expect("write cfg predicate should be retained");
         assert_eq!(
-            quote!(#predicate).to_string(),
-            quote!(any(debug_assertions, feature = "strict-etw")).to_string()
+            quote!(#input).to_string(),
+            quote!(debug_assertions).to_string()
+        );
+        assert_eq!(
+            quote!(#write).to_string(),
+            quote!(feature = "strict-etw").to_string()
         );
     }
 
     #[test]
-    fn wrapper_args_reject_panic_cfg_without_panic_scope() {
+    fn wrapper_args_reject_panic_cfg_when_its_boolean_is_disabled() {
         let error = syn::parse_str::<WrapperArgs>(
-            r#""manifest.man", event_panics_when = cfg(debug_assertions)"#,
+            r#""manifest.man",
+                event_panics_on_input = false,
+                event_panics_on_input_when = cfg(debug_assertions)"#,
         )
         .err()
-        .expect("a panic predicate without a panic scope should fail");
+        .expect("a panic predicate with a disabled boolean should fail");
 
         assert!(
             error
                 .to_string()
-                .contains("requires `event_panics = input` or `event_panics = all`")
+                .contains("requires `event_panics_on_input = true`")
         );
     }
 
@@ -1834,8 +1879,14 @@ mod tests {
             &p,
             EventPolicy {
                 errors: EventErrors::Propagate,
-                panics: EventPanics::Never,
-                panics_when: None,
+                input_panics: PanicPolicy {
+                    enabled: false,
+                    when: None,
+                },
+                write_panics: PanicPolicy {
+                    enabled: false,
+                    when: None,
+                },
             },
             &codegen,
         )
@@ -1865,8 +1916,14 @@ mod tests {
             &p,
             EventPolicy {
                 errors: EventErrors::Ignore,
-                panics: EventPanics::Never,
-                panics_when: None,
+                input_panics: PanicPolicy {
+                    enabled: false,
+                    when: None,
+                },
+                write_panics: PanicPolicy {
+                    enabled: false,
+                    when: None,
+                },
             },
             &codegen,
         )
@@ -1897,8 +1954,14 @@ mod tests {
             &p,
             EventPolicy {
                 errors: EventErrors::Ignore,
-                panics: EventPanics::Input,
-                panics_when: Some(&predicate),
+                input_panics: PanicPolicy {
+                    enabled: true,
+                    when: Some(&predicate),
+                },
+                write_panics: PanicPolicy {
+                    enabled: false,
+                    when: None,
+                },
             },
             &codegen,
         )
@@ -1910,20 +1973,30 @@ mod tests {
         assert!(rendered.contains("cfg (debug_assertions)"));
         assert!(rendered.contains("cfg (not (debug_assertions))"));
 
-        let (_, all) = gen_event_method(
+        let write_predicate: Meta = syn::parse_str(r#"feature = "strict-etw""#).unwrap();
+        let (_, write) = gen_event_method(
             &e,
             &specs,
             "__write_q",
             &p,
             EventPolicy {
                 errors: EventErrors::Ignore,
-                panics: EventPanics::All,
-                panics_when: None,
+                input_panics: PanicPolicy {
+                    enabled: false,
+                    when: None,
+                },
+                write_panics: PanicPolicy {
+                    enabled: true,
+                    when: Some(&write_predicate),
+                },
             },
             &codegen,
         )
         .unwrap();
-        assert!(all.to_string().contains("failed to write ETW event"));
+        let rendered = write.to_string();
+        assert!(!rendered.contains("invalid input for ETW event"));
+        assert!(rendered.contains("failed to write ETW event"));
+        assert!(rendered.contains(r#"feature = "strict-etw""#));
     }
 
     #[test]
