@@ -67,55 +67,47 @@ gen_etw_wrapper!("manifests/widgetservice.man", "Contoso.WidgetService" -> Widge
 
 ### Configuring event errors
 
-Generated event methods return `etw_wrapper::Result<()>` by default. Applications that treat
-logging as best-effort can configure event methods to return `()` and ignore errors encountered
-while preparing or writing an event:
+Generated event methods return `etw_wrapper::Result<()>` by default. Applications that treat logging as best-effort can configure event methods to return `()` and ignore errors encountered while preparing or writing an event:
 
 ```rust
 gen_etw_wrapper!(
     "manifests/widgetservice.man",
-    event_errors = ignore,
+    event_methods_return_unit = true,
     PROVIDER_WIDGETSERVICE -> WidgetLogger,
 );
 ```
 
-This setting applies only to generated event methods. `WidgetLogger::register()` continues to
-return `etw_wrapper::Result<WidgetLogger>`.
+This setting applies only to generated event methods. `WidgetLogger::register()` continues to return `etw_wrapper::Result<WidgetLogger>`.
 
 Event methods can also panic on invalid input, or on every error:
 
 ```rust
 gen_etw_wrapper!(
     "manifests/widgetservice.man",
-    event_errors = ignore,
-    event_panics_on_input = true,
-    event_panics_on_input_when = cfg(debug_assertions),
+    event_methods_return_unit = true,
+    panic_on_input = cfg(debug_assertions),
     PROVIDER_WIDGETSERVICE -> WidgetLogger,
 );
 ```
 
 Input and Windows write failures are configured independently:
 
-| Option                    | Errors covered                                                          |
-|---------------------------|-------------------------------------------------------------------------|
-| `event_panics_on_input`   | Errors detected while validating or preparing caller-provided fields.   |
-| `event_panics_on_write`   | Errors returned by the Windows event writer.                             |
+| Option             | Errors covered                                                          |
+|--------------------|-------------------------------------------------------------------------|
+| `panic_on_input`   | Errors detected while validating or preparing caller-provided fields.   |
+| `panic_on_write`   | Errors returned by the Windows event writer.                            |
 
-Both options default to `false`. Each has a corresponding `_when` option that accepts any Rust
-`cfg(...)` predicate:
+Both options accept `true`, `false` (the default), or a Rust `cfg(...)` predicate:
 
 ```rust
-event_panics_on_input = true,
-event_panics_on_input_when = cfg(debug_assertions),
-event_panics_on_write = true,
-event_panics_on_write_when = cfg(feature = "strict-etw"),
+gen_etw_wrapper!(
+    "manifests/widgetservice.man",
+    panic_on_input = true,
+    panic_on_write = cfg(feature = "strict-etw"),
+);
 ```
 
-Omitting a corresponding `_when` predicate makes that panic behavior unconditional. Predicates are
-evaluated in the crate invoking the macro. When one is false, `event_errors` determines whether
-that category of error is returned or ignored. The generated method's return type depends only on
-`event_errors`, so it does not change between build configurations. Feature names used in a
-predicate must be declared by the crate invoking the macro.
+Predicates are evaluated in the crate invoking the macro. When one is false, errors in that category are returned unless `event_methods_return_unit = true`. The generated method's return type depends only on `event_methods_return_unit`, which accepts only `true` or `false`, so it does not change between build configurations. Feature names used in a predicate must be declared by the crate invoking the macro.
 
 ### Emitting events
 
@@ -199,12 +191,7 @@ A field-reference count is derived from the array and is not exposed as a separa
 fn event(&self, values: &[u32]) -> Result<()>
 ```
 
-Scalar arrays use `&[T; N]` or `&[T]`. String arrays use arrays or slices of `&str`;
-provider-code-page ANSI strings use `&[u8]`; SID arrays use `&field::Sid`. The generated method
-packs variable-length elements into the contiguous layout expected by ETW. Fixed-length binary
-arrays use `&[[u8; LENGTH]; COUNT]` for two-dimensional fixed sizes. When both binary `length` and
-`count` are field references, the method accepts a slice of byte slices, derives both fields, and
-returns `ERROR_INVALID_DATA` if the elements do not all have the same length.
+Scalar arrays use `&[T; N]` or `&[T]`. String arrays use arrays or slices of `&str`; provider-code-page ANSI strings use `&[u8]`; SID arrays use `&field::Sid`. The generated method packs variable-length elements into the contiguous layout expected by ETW. Fixed-length binary arrays use `&[[u8; LENGTH]; COUNT]` for two-dimensional fixed sizes. When both binary `length` and`count` are field references, the method accepts a slice of byte slices, derives both fields, and returns `ERROR_INVALID_DATA` if the elements do not all have the same length.
 
 ### Variable-Length Fields
 

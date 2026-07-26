@@ -107,6 +107,27 @@ fn parse_cfg_predicate(input: ParseStream, option: &str) -> syn::Result<Meta> {
     content.parse()
 }
 
+fn parse_panic_config(input: ParseStream, option: &str) -> syn::Result<PanicConfig> {
+    if input.peek(LitBool) {
+        let enabled = input.parse::<LitBool>()?.value;
+        return Ok(PanicConfig {
+            enabled,
+            when: None,
+        });
+    }
+
+    let when = parse_cfg_predicate(input, option).map_err(|_| {
+        syn::Error::new(
+            input.span(),
+            format!("`{option}` must be `true`, `false`, or a `cfg(...)` predicate"),
+        )
+    })?;
+    Ok(PanicConfig {
+        enabled: true,
+        when: Some(when),
+    })
+}
+
 impl Parse for WrapperArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let path: LitStr = input.parse()?;
@@ -114,10 +135,8 @@ impl Parse for WrapperArgs {
         let mut event_errors_set = false;
         let mut input_panics = PanicConfig::default();
         let mut input_panics_set = false;
-        let mut input_panics_when_set = false;
         let mut write_panics = PanicConfig::default();
         let mut write_panics_set = false;
-        let mut write_panics_when_set = false;
         let mut overrides = Vec::new();
 
         while input.peek(Token![,]) {
@@ -138,72 +157,42 @@ impl Parse for WrapperArgs {
                 if input.peek(Token![=]) {
                     input.parse::<Token![=]>()?;
                     match key.as_str() {
-                        "event_errors" => {
+                        "event_methods_return_unit" => {
                             if event_errors_set {
                                 return Err(syn::Error::new(
                                     key_span,
-                                    "duplicate `event_errors` option",
+                                    "duplicate `event_methods_return_unit` option",
                                 ));
                             }
 
-                            let value: Ident = input.parse()?;
-                            event_errors = match value.to_string().as_str() {
-                                "propagate" => EventErrors::Propagate,
-                                "ignore" => EventErrors::Ignore,
-                                _ => {
-                                    return Err(syn::Error::new(
-                                        value.span(),
-                                        "`event_errors` must be `propagate` or `ignore`",
-                                    ));
-                                }
+                            event_errors = if input.parse::<LitBool>()?.value {
+                                EventErrors::Ignore
+                            } else {
+                                EventErrors::Propagate
                             };
                             event_errors_set = true;
                         }
-                        "event_panics_on_input" => {
+                        "panic_on_input" => {
                             if input_panics_set {
                                 return Err(syn::Error::new(
                                     key_span,
-                                    "duplicate `event_panics_on_input` option",
+                                    "duplicate `panic_on_input` option",
                                 ));
                             }
 
-                            input_panics.enabled = input.parse::<LitBool>()?.value;
+                            input_panics = parse_panic_config(input, "panic_on_input")?;
                             input_panics_set = true;
                         }
-                        "event_panics_on_input_when" => {
-                            if input_panics_when_set {
-                                return Err(syn::Error::new(
-                                    key_span,
-                                    "duplicate `event_panics_on_input_when` option",
-                                ));
-                            }
-
-                            input_panics.when =
-                                Some(parse_cfg_predicate(input, "event_panics_on_input_when")?);
-                            input_panics_when_set = true;
-                        }
-                        "event_panics_on_write" => {
+                        "panic_on_write" => {
                             if write_panics_set {
                                 return Err(syn::Error::new(
                                     key_span,
-                                    "duplicate `event_panics_on_write` option",
+                                    "duplicate `panic_on_write` option",
                                 ));
                             }
 
-                            write_panics.enabled = input.parse::<LitBool>()?.value;
+                            write_panics = parse_panic_config(input, "panic_on_write")?;
                             write_panics_set = true;
-                        }
-                        "event_panics_on_write_when" => {
-                            if write_panics_when_set {
-                                return Err(syn::Error::new(
-                                    key_span,
-                                    "duplicate `event_panics_on_write_when` option",
-                                ));
-                            }
-
-                            write_panics.when =
-                                Some(parse_cfg_predicate(input, "event_panics_on_write_when")?);
-                            write_panics_when_set = true;
                         }
                         _ => {
                             return Err(syn::Error::new(
@@ -224,19 +213,6 @@ impl Parse for WrapperArgs {
                 key_span,
                 name,
             });
-        }
-
-        if input_panics.when.is_some() && !input_panics.enabled {
-            return Err(syn::Error::new(
-                path.span(),
-                "`event_panics_on_input_when` requires `event_panics_on_input = true`",
-            ));
-        }
-        if write_panics.when.is_some() && !write_panics.enabled {
-            return Err(syn::Error::new(
-                path.span(),
-                "`event_panics_on_write_when` requires `event_panics_on_write = true`",
-            ));
         }
 
         Ok(WrapperArgs {
@@ -287,17 +263,16 @@ impl Parse for WrapperArgs {
 /// # use etw_wrapper::gen_etw_wrapper;
 /// gen_etw_wrapper!(
 ///     "manifests/widgetservice.man",
-///     event_errors = ignore,
-///     event_panics_on_input = true,
-///     event_panics_on_input_when = cfg(debug_assertions),
+///     event_methods_return_unit = true,
+///     panic_on_input = cfg(debug_assertions),
 /// );
 /// ```
 ///
-/// `event_panics_on_input` covers errors detected while validating or preparing caller-provided
-/// values. `event_panics_on_write` covers errors returned by the Windows event-write call. Both
-/// default to `false`, and each has a corresponding `_when` option that accepts any Rust `cfg(...)`
-/// predicate. When a panic behavior is disabled, `event_errors` determines whether the error is
-/// returned or ignored. Only `event_errors` affects the generated method's return type.
+/// `panic_on_input` covers errors detected while validating or preparing caller-provided values.
+/// `panic_on_write` covers errors returned by the Windows event-write call. Each accepts `true`,
+/// `false` (the default), or a Rust `cfg(...)` predicate. When a panic behavior is disabled, event
+/// errors are returned unless `event_methods_return_unit = true`. Only
+/// `event_methods_return_unit` affects the generated method's return type.
 ///
 /// This setting affects only event methods. Provider registration remains fallible.
 ///
@@ -1737,52 +1712,55 @@ mod tests {
         let args: WrapperArgs = syn::parse_str(r#""manifest.man", PROVIDER -> Logger"#).unwrap();
 
         assert_eq!(args.event_errors, EventErrors::Propagate);
-        assert_eq!(args.overrides.len(), 1);
-    }
-
-    #[test]
-    fn wrapper_args_parse_ignored_event_errors() {
-        let args: WrapperArgs =
-            syn::parse_str(r#""manifest.man", event_errors = ignore, PROVIDER -> Logger"#).unwrap();
-
-        assert_eq!(args.event_errors, EventErrors::Ignore);
         assert!(!args.input_panics.enabled);
         assert!(!args.write_panics.enabled);
         assert_eq!(args.overrides.len(), 1);
     }
 
     #[test]
-    fn wrapper_args_reject_invalid_or_duplicate_event_errors() {
-        let invalid = syn::parse_str::<WrapperArgs>(r#""manifest.man", event_errors = discard"#)
-            .err()
-            .expect("invalid option value should fail");
+    fn wrapper_args_parse_unit_return_setting() {
+        let args: WrapperArgs = syn::parse_str(
+            r#""manifest.man", event_methods_return_unit = true, PROVIDER -> Logger"#,
+        )
+        .unwrap();
+
+        assert_eq!(args.event_errors, EventErrors::Ignore);
+        assert_eq!(args.overrides.len(), 1);
+
+        let args: WrapperArgs =
+            syn::parse_str(r#""manifest.man", event_methods_return_unit = false"#).unwrap();
+        assert_eq!(args.event_errors, EventErrors::Propagate);
+    }
+
+    #[test]
+    fn wrapper_args_reject_invalid_or_duplicate_unit_return_setting() {
         assert!(
-            invalid
-                .to_string()
-                .contains("must be `propagate` or `ignore`")
+            syn::parse_str::<WrapperArgs>(
+                r#""manifest.man", event_methods_return_unit = cfg(debug_assertions)"#
+            )
+            .is_err()
         );
 
         let duplicate = syn::parse_str::<WrapperArgs>(
-            r#""manifest.man", event_errors = ignore, event_errors = propagate"#,
+            r#""manifest.man",
+                event_methods_return_unit = true,
+                event_methods_return_unit = false"#,
         )
         .err()
         .expect("duplicate option should fail");
         assert!(
             duplicate
                 .to_string()
-                .contains("duplicate `event_errors` option")
+                .contains("duplicate `event_methods_return_unit` option")
         );
     }
 
     #[test]
-    fn wrapper_args_parse_independently_gated_panics() {
+    fn wrapper_args_parse_independent_panic_settings() {
         let args: WrapperArgs = syn::parse_str(
             r#""manifest.man",
-                event_errors = ignore,
-                event_panics_on_input = true,
-                event_panics_on_input_when = cfg(debug_assertions),
-                event_panics_on_write = true,
-                event_panics_on_write_when = cfg(feature = "strict-etw")"#,
+                panic_on_input = cfg(debug_assertions),
+                panic_on_write = true"#,
         )
         .unwrap();
 
@@ -1792,34 +1770,28 @@ mod tests {
             .input_panics
             .when
             .expect("input cfg predicate should be retained");
-        let write = args
-            .write_panics
-            .when
-            .expect("write cfg predicate should be retained");
+        assert!(args.write_panics.when.is_none());
         assert_eq!(
             quote!(#input).to_string(),
             quote!(debug_assertions).to_string()
         );
-        assert_eq!(
-            quote!(#write).to_string(),
-            quote!(feature = "strict-etw").to_string()
-        );
     }
 
     #[test]
-    fn wrapper_args_reject_panic_cfg_when_its_boolean_is_disabled() {
-        let error = syn::parse_str::<WrapperArgs>(
-            r#""manifest.man",
-                event_panics_on_input = false,
-                event_panics_on_input_when = cfg(debug_assertions)"#,
-        )
-        .err()
-        .expect("a panic predicate with a disabled boolean should fail");
+    fn wrapper_args_parse_false_and_reject_invalid_panic_settings() {
+        let args: WrapperArgs =
+            syn::parse_str(r#""manifest.man", panic_on_input = false"#).unwrap();
+        assert!(!args.input_panics.enabled);
+        assert!(args.input_panics.when.is_none());
+
+        let error = syn::parse_str::<WrapperArgs>(r#""manifest.man", panic_on_write = sometimes"#)
+            .err()
+            .expect("invalid panic setting should fail");
 
         assert!(
             error
                 .to_string()
-                .contains("requires `event_panics_on_input = true`")
+                .contains("must be `true`, `false`, or a `cfg(...)` predicate")
         );
     }
 

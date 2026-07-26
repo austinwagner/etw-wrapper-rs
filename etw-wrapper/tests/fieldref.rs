@@ -10,8 +10,8 @@ mod input_panics {
 
     gen_etw_wrapper!(
         "manifests/fieldref.man",
-        event_errors = ignore,
-        event_panics_on_input = true,
+        event_methods_return_unit = true,
+        panic_on_input = true,
         PROVIDER_FIELDREF -> InputPanicFieldrefLogger,
     );
 

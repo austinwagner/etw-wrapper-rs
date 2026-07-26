@@ -10,7 +10,7 @@ mod ignored_event_errors {
 
     gen_etw_wrapper!(
         "manifests/arrays.man",
-        event_errors = ignore,
+        event_methods_return_unit = true,
         PROVIDER_ARRAYS -> BestEffortArraysLogger,
     );
 
@@ -30,8 +30,8 @@ mod input_panics {
 
     gen_etw_wrapper!(
         "manifests/arrays.man",
-        event_errors = ignore,
-        event_panics_on_input = true,
+        event_methods_return_unit = true,
+        panic_on_input = true,
         PROVIDER_ARRAYS -> InputPanicArraysLogger,
     );
 
@@ -49,9 +49,9 @@ mod cfg_disabled_input_panics {
 
     gen_etw_wrapper!(
         "manifests/arrays.man",
-        event_errors = ignore,
-        event_panics_on_input = true,
-        event_panics_on_input_when = cfg(any()),
+        event_methods_return_unit = true,
+        panic_on_input = cfg(any()),
+        panic_on_write = cfg(any()),
         PROVIDER_ARRAYS -> CfgDisabledPanicArraysLogger,
     );
 
