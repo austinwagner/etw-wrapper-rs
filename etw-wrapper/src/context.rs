@@ -109,6 +109,14 @@ impl EtwContext {
 
 impl Drop for EtwContext {
     fn drop(&mut self) {
+        // We have to create a context to get its pointer prior to registering it. If registration
+	// fails then we will have a null handle that we don't want to try to unregister.
+        if self.registration_handle == 0 {
+            return;
+        }
+
+        // SAFETY: the handle came from a successful `EventRegister` and is unregistered once,
+        // when the sole owning `Box` is dropped.
         unsafe {
             let _ = EventUnregister(self.registration_handle);
         }
