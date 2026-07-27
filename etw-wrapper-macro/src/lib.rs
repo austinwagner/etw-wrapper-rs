@@ -251,8 +251,9 @@ impl Parse for WrapperArgs {
 /// - automatic provider unregistration when the value is dropped.
 ///
 /// Event methods return [`etw_wrapper::Result<()>`](https://docs.rs/etw-wrapper/latest/etw_wrapper/type.Result.html).
-/// Manifest fields used as `length` or `count` references are derived from the corresponding
-/// slice and are omitted from the Rust method signature.
+/// Manifest fields used as a `count` reference, or as the `length` of a `win:Binary` field, are
+/// derived from the corresponding slice and omitted from the Rust method signature. The `length`
+/// reference of a string field sets the width of the encoded string, so it stays a parameter.
 ///
 /// # Event errors
 ///
@@ -639,18 +640,15 @@ fn build_value_plan(
         match length {
             Length::Implicit => Ok(ElementLength::Implicit),
             Length::Constant(length) => Ok(ElementLength::Fixed(*length as usize)),
-            // Existing scalar-string behavior treats a referenced length as NUL-terminated. Arrays
-            // need the resolved field because each encoded element must have exactly that length.
-            Length::FieldRef(_) if cardinality == Cardinality::Single => {
-                Ok(ElementLength::Implicit)
-            }
+            // A referenced length declares a fixed field width, so every encoded string must have
+            // exactly that length. Decoders read the declared count and never scan for a NUL.
             Length::FieldRef(name) => Ok(ElementLength::FieldRef(resolve_prior_int_field(
                 index_by_name,
                 ev,
                 p,
                 field_index,
                 name,
-                "string array field",
+                "string field",
                 "length",
             )?)),
         }
@@ -777,16 +775,29 @@ fn plan_string_value(
 
     if value.cardinality == Cardinality::Single {
         let Some((plain, fixed, elem_ty)) = encode_fns else {
-            let plan = match length {
-                ElementLength::Fixed(length) => direct_field_plan(id, quote!(&[u8; #length])),
+            let ty = match length {
+                ElementLength::Fixed(length) => quote!(&[u8; #length]),
                 ElementLength::Implicit | ElementLength::FieldRef(_) => {
-                    direct_field_plan(id, specs[field_index].rust_ty.clone())
+                    specs[field_index].rust_ty.clone()
                 }
             };
+            let plan = direct_field_plan(id, ty);
             let input = plan.call.clone();
+            // These bytes are already encoded, so a referenced length cannot be applied for the
+            // caller; the buffer they hand over has to match the width the manifest declares.
+            let validate_len = match length {
+                ElementLength::FieldRef(from) => {
+                    let declared = &idents[from];
+                    quote! {
+                        #runtime::field::ensure_len(#input.len(), #declared as usize)?;
+                    }
+                }
+                ElementLength::Implicit | ElementLength::Fixed(_) => TokenStream2::new(),
+            };
             return Ok(with_validation(
                 plan,
                 quote! {
+                    #validate_len
                     #runtime::field::ensure_nul_terminated(#input)?;
                 },
             ));
@@ -800,10 +811,16 @@ fn plan_string_value(
                 }),
                 quote!(#runtime::field::#fixed(#id, #length)),
             ),
-            // A referenced length on a scalar string keeps NUL-terminated behavior
-            ElementLength::Implicit | ElementLength::FieldRef(_) => {
-                (None, quote!(#runtime::field::#plain(#id)))
+            ElementLength::FieldRef(from) => {
+                let declared = &idents[from];
+                (
+                    Some(quote! {
+                        #runtime::field::ensure_nonzero_length(#declared as usize)?;
+                    }),
+                    quote!(#runtime::field::#fixed(#id, #declared as usize)),
+                )
             }
+            ElementLength::Implicit => (None, quote!(#runtime::field::#plain(#id))),
         };
         let tmp = format_ident!("__t{}", field_index);
         let temp = quote! {
@@ -2035,6 +2052,77 @@ mod tests {
         // Blob stays exposed
         assert!(plans[1].param.is_some());
         assert_eq!(exposed_count(&plans), 1);
+    }
+
+    #[test]
+    fn fieldref_length_keeps_scalar_strings_at_the_declared_width() {
+        for (win_type, encoder) in [
+            (
+                WinType::UnicodeString(Length::FieldRef("NameLength".into())),
+                "to_u16cstring_fixed_len",
+            ),
+            (
+                WinType::AnsiString(Length::FieldRef("NameLength".into()), AnsiEncoding::Utf8),
+                "to_cstring_fixed_len",
+            ),
+        ] {
+            let e = event(vec![("NameLength", WinType::UInt16), ("Name", win_type)]);
+            let plans = plan(&e).unwrap();
+            // Unlike a binary length, a string length sets the field width rather than being
+            // derived from the value, so it stays a parameter
+            assert!(plans[0].param.is_some(), "NameLength should stay exposed");
+            assert!(plans[0].temp.is_none());
+            assert_eq!(exposed_count(&plans), 2);
+            let temp = plans[1]
+                .temp
+                .as_ref()
+                .expect("expected a fixed-length temp")
+                .to_string();
+            assert!(temp.contains(encoder), "expected {encoder} in {temp}");
+            assert!(temp.contains("name_length"), "{temp}");
+        }
+    }
+
+    #[test]
+    fn fieldref_length_checks_caller_encoded_scalar_strings() {
+        let e = event(vec![
+            ("NameLength", WinType::UInt16),
+            (
+                "Name",
+                WinType::AnsiString(
+                    Length::FieldRef("NameLength".into()),
+                    AnsiEncoding::ProviderAnsi,
+                ),
+            ),
+        ]);
+        let plans = plan(&e).unwrap();
+        // Provider-ANSI bytes arrive already encoded, so the width is validated instead
+        assert!(plans[1].temp.is_none());
+        let validation = plans[1]
+            .validation
+            .as_ref()
+            .expect("expected a length check")
+            .to_string();
+        assert!(validation.contains("ensure_len"), "{validation}");
+        assert!(validation.contains("name_length"), "{validation}");
+    }
+
+    #[test]
+    fn fieldref_length_on_a_scalar_string_validates_its_target() {
+        let e = event(vec![(
+            "Name",
+            WinType::UnicodeString(Length::FieldRef("Nope".into())),
+        )]);
+        assert!(plan(&e).is_err(), "unknown length field should be rejected");
+
+        let e = event(vec![
+            (
+                "Name",
+                WinType::UnicodeString(Length::FieldRef("NameLength".into())),
+            ),
+            ("NameLength", WinType::UInt16),
+        ]);
+        assert!(plan(&e).is_err(), "forward reference should be rejected");
     }
 
     #[test]

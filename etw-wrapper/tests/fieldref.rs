@@ -1,5 +1,6 @@
-//! Tests that a `win:Binary length="OtherField"` template derives the length
-//! field from the blob rather than exposing it as a parameter.
+//! Tests for `length="OtherField"` templates: a binary length is derived from the blob rather
+//! than exposed as a parameter, while a string length stays a parameter and fixes the width of
+//! the encoded field.
 
 use etw_wrapper::gen_etw_wrapper;
 
@@ -21,6 +22,24 @@ mod input_panics {
         let logger = InputPanicFieldrefLogger::register().expect("provider registration failed");
 
         logger.ansi_named(b"invalid!");
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid input for ETW event `VAR_ANSI_NAMED`")]
+    fn caller_encoded_string_must_match_its_referenced_length() {
+        let logger = InputPanicFieldrefLogger::register().expect("provider registration failed");
+
+        // The declared width is 8 bytes but only 4 are supplied, which would previously have
+        // been written as a short NUL-terminated buffer and decoded as 8 bytes of garbage.
+        logger.var_ansi_named(8, b"abc\0");
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid input for ETW event `VAR_NAMED`")]
+    fn referenced_length_must_leave_room_for_a_terminator() {
+        let logger = InputPanicFieldrefLogger::register().expect("provider registration failed");
+
+        logger.var_named(0, "anything");
     }
 }
 
@@ -61,6 +80,29 @@ fn constant_length_ansi_is_accepted() {
     logger
         .ansi_named(b"ansi   \0")
         .expect("emitting ANSI named event failed");
+}
+
+#[test]
+fn referenced_length_unicode_is_encoded_to_the_declared_width() {
+    let logger = ProviderFieldrefLogger::register().expect("provider registration failed");
+
+    // Name declares length="NameLength", so the payload is exactly that many UTF-16 units,
+    // padded or truncated to fit, rather than terminated at the string's own length.
+    logger
+        .var_named(6, "hi")
+        .expect("emitting padded name failed");
+    logger
+        .var_named(4, "far too long to fit")
+        .expect("emitting truncated name failed");
+}
+
+#[test]
+fn referenced_length_ansi_accepts_a_matching_buffer() {
+    let logger = ProviderFieldrefLogger::register().expect("provider registration failed");
+
+    logger
+        .var_ansi_named(4, b"abc\0")
+        .expect("emitting ANSI name failed");
 }
 
 #[test]

@@ -166,7 +166,7 @@ The macro maps manifest `inType` values to Rust parameter types as follows:
 | `win:GUID`                                                  | `GUID`         |                                                                                  |
 | `win:FILETIME`                                              | `FILETIME`     |                                                                                  |
 | `win:SYSTEMTIME`                                            | `SYSTEMTIME`   |                                                                                  |
-| `win:UnicodeString`                                         | `&str`         | Interior NULs become spaces, `length="N"` produces exactly N units including NUL |
+| `win:UnicodeString`                                         | `&str`         | Interior NULs become spaces, `length="N"` or `length="Field"` produces exactly that many units including NUL |
 | `win:AnsiString`                                            | `&[u8]`        | Caller supplies provider-code-page bytes and the final NUL                       |
 | `win:AnsiString` with `outType="win:Utf8/win:Json/win:Xml"` | `&str`         | Encoded as UTF-8, interior NULs become spaces                                    |
 | `win:Binary`                                                | `&[u8]`        | `length="N"` becomes `&[u8; N]`, `length="Field"` derives that field (see below) |
@@ -222,6 +222,19 @@ fn blob_written(&self, blob: &[u8]) -> Result<()>
 For `win:UnicodeString length="N"`, the generated method emits exactly N UTF-16 code units as required by ETW: at most N-1 content units, space padding when needed, and a terminating NUL.
 
 A default `win:AnsiString` uses the provider's ANSI code page, so its generated parameter remains raw bytes. A fixed-length default ANSI field becomes `&[u8; N]`; the array must already contain the required padding and final NUL. If the manifest explicitly selects `outType="win:Utf8"`, `win:Json`, or `win:Xml`, the generated method accepts `&str`, performs UTF-8 encoding, and handles fixed-length padding and truncation.
+
+A string `length="OtherField"` names the field carrying the width, which decoders read instead of scanning for a NUL. Unlike a binary length, that field stays a parameter, because it sets the width rather than describing a value the macro already has:
+
+```xml
+<data name="NameLength" inType="win:UInt16"/>
+<data name="Name"       inType="win:UnicodeString" length="NameLength"/>
+```
+
+```rust
+fn named(&self, name_length: u16, name: &str) -> Result<()>
+```
+
+Each call encodes `name` to exactly `name_length` code units, padding or truncating as it does for a constant length, and returns `Error::EmptyFixedLengthString` if the width leaves no room for the terminator. A default `win:AnsiString` arrives already encoded, so its buffer must match the declared width itself; a mismatch returns `Error::LengthMismatch`.
 
 ## Manual API
 

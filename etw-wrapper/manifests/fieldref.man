@@ -35,6 +35,19 @@
           <template tid="T_Utf8Named">
             <data name="Name" inType="win:AnsiString" outType="win:Utf8" length="8"/>
           </template>
+
+          <!-- `NameLength` carries the width of `Name` in code units, so the string is encoded
+               to exactly that length instead of being terminated at its own. -->
+          <template tid="T_VarNamed">
+            <data name="NameLength" inType="win:UInt16"/>
+            <data name="Name"       inType="win:UnicodeString" length="NameLength"/>
+          </template>
+
+          <!-- The same shape for caller-encoded bytes, which must already match the width. -->
+          <template tid="T_VarAnsiNamed">
+            <data name="NameLength" inType="win:UInt16"/>
+            <data name="Name"       inType="win:AnsiString" length="NameLength"/>
+          </template>
         </templates>
 
         <events>
@@ -42,6 +55,8 @@
           <event value="2" symbol="NAMED"        version="0" template="T_Named"/>
           <event value="3" symbol="ANSI_NAMED"   version="0" template="T_AnsiNamed"/>
           <event value="4" symbol="UTF8_NAMED"   version="0" template="T_Utf8Named"/>
+          <event value="5" symbol="VAR_NAMED"      version="0" template="T_VarNamed"/>
+          <event value="6" symbol="VAR_ANSI_NAMED" version="0" template="T_VarAnsiNamed"/>
         </events>
 
       </provider>
