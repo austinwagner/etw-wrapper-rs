@@ -20,20 +20,30 @@ pub struct EtwLogger {
 
 impl EtwLogger {
     /// Registers the provider with the given GUID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Windows`](crate::Error::Windows) if Windows cannot register the provider.
     pub fn register(guid: &GUID) -> Result<Self> {
         Ok(EtwLogger {
             ctx: EtwContext::register(guid)?,
         })
     }
 
-    /// Returns whether the provider is enabled for the specified level and keyword.
+    /// Returns whether an active ETW session accepts the specified level and keyword.
     #[must_use]
     #[inline]
     pub fn enabled(&self, level: u8, keyword: u64) -> bool {
         self.ctx.enabled(level, keyword)
     }
 
-    /// Writes a single event.
+    /// Writes an event with its payload descriptors in manifest-template order.
+    ///
+    /// This method does not call [`EtwLogger::enabled`] first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Windows`](crate::Error::Windows) if Windows rejects the event.
     pub fn write(&self, descriptor: &EVENT_DESCRIPTOR, data: &[EventDataDescriptor]) -> Result<()> {
         self.ctx.write(descriptor, data)
     }
@@ -109,8 +119,8 @@ impl EtwContext {
 
 impl Drop for EtwContext {
     fn drop(&mut self) {
-        // We have to create a context to get its pointer prior to registering it. If registration
-	// fails then we will have a null handle that we don't want to try to unregister.
+        // `EventRegister` needs the context pointer before it returns a handle. If registration
+        // fails, the handle remains zero and must not be passed to `EventUnregister`.
         if self.registration_handle == 0 {
             return;
         }

@@ -436,6 +436,7 @@ fn gen_provider(
         None => format_ident!("{}Logger", ccase!(pascal, &p.symbol)),
     };
     let guid = p.guid;
+    let provider_doc = format!("An ETW logger for the `{}` provider.", p.symbol);
 
     // Emit one public method per event and one shared backing helper per distinct
     // WinType parameter signature, keyed by the generated helper name
@@ -470,6 +471,7 @@ fn gen_provider(
     let runtime = &codegen.runtime;
 
     Ok(quote! {
+        #[doc = #provider_doc]
         pub struct #struct_name {
             ctx: #runtime::EtwLogger,
         }
@@ -478,6 +480,10 @@ fn gen_provider(
             /// Registers the provider with ETW.
             ///
             /// The provider is automatically unregistered when dropped.
+            ///
+            /// # Errors
+            ///
+            /// Returns an error if Windows cannot register the provider.
             pub fn register() -> #runtime::Result<Self> {
                 let guid = #runtime::GUID::from_u128(#guid);
                 let ctx = #runtime::EtwLogger::register(&guid)?;
@@ -1445,6 +1451,30 @@ fn gen_event_method(
         EventErrors::Propagate => quote! { #runtime::Result::Ok(()) },
         EventErrors::Ignore => quote! {},
     };
+    let panic_doc = match (
+        event_policy.input_panics.enabled,
+        event_policy.write_panics.enabled,
+    ) {
+        (true, true) => quote! {
+            #[doc = ""]
+            #[doc = "# Panics"]
+            #[doc = ""]
+            #[doc = "Panics if input validation or the Windows event write fails."]
+        },
+        (true, false) => quote! {
+            #[doc = ""]
+            #[doc = "# Panics"]
+            #[doc = ""]
+            #[doc = "Panics if input validation fails."]
+        },
+        (false, true) => quote! {
+            #[doc = ""]
+            #[doc = "# Panics"]
+            #[doc = ""]
+            #[doc = "Panics if the Windows event write fails."]
+        },
+        (false, false) => quote! {},
+    };
     let handle_outcome = quote! {
         match __outcome {
             ::core::result::Result::Ok(()) => {
@@ -1462,6 +1492,11 @@ fn gen_event_method(
     let method = match event_policy.errors {
         EventErrors::Propagate => quote! {
             #doc
+            ///
+            /// # Errors
+            ///
+            /// Input validation and write failures that do not panic are returned as errors.
+            #panic_doc
             #[allow(clippy::too_many_arguments)]
             pub fn #method(&self, #(#params),*) -> #runtime::Result<()> {
                 #prevalidation
@@ -1472,7 +1507,8 @@ fn gen_event_method(
         EventErrors::Ignore => quote! {
             #doc
             ///
-            /// Errors not configured to panic are ignored.
+            /// Input validation and write failures that do not panic are ignored.
+            #panic_doc
             #[allow(clippy::too_many_arguments)]
             pub fn #method(&self, #(#params),*) {
                 #prevalidation
@@ -1911,6 +1947,7 @@ mod tests {
         // with "%1" rewritten to the parameter name
         assert!(rendered.contains("Writes the"));
         assert!(rendered.contains("Hello {a} world"));
+        assert!(rendered.contains("# Errors"));
     }
 
     #[test]
@@ -1947,7 +1984,9 @@ mod tests {
 
         assert!(rendered.contains("pub fn e"));
         assert!(rendered.contains("core :: mem :: drop"));
-        assert!(rendered.contains("Errors not configured to panic are ignored"));
+        assert!(
+            rendered.contains("Input validation and write failures that do not panic are ignored")
+        );
     }
 
     #[test]
@@ -1987,6 +2026,7 @@ mod tests {
         assert!(!rendered.contains("failed to write ETW event"));
         assert!(rendered.contains("cfg (debug_assertions)"));
         assert!(rendered.contains("cfg (not (debug_assertions))"));
+        assert!(rendered.contains("Panics if input validation fails"));
 
         let write_predicate: Meta = syn::parse_str(r#"feature = "strict-etw""#).unwrap();
         let (_, write) = gen_event_method(
@@ -2012,6 +2052,7 @@ mod tests {
         assert!(!rendered.contains("invalid input for ETW event"));
         assert!(rendered.contains("failed to write ETW event"));
         assert!(rendered.contains(r#"feature = "strict-etw""#));
+        assert!(rendered.contains("Panics if the Windows event write fails"));
     }
 
     #[test]

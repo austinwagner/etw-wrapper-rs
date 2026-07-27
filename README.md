@@ -1,6 +1,6 @@
 # etw-wrapper
 
-Strongly-typed [Event Tracing for Windows (ETW)](https://learn.microsoft.com/en-us/windows-hardware/test/wpt/event-tracing-for-windows) logger generator for Rust.
+Strongly typed [Event Tracing for Windows (ETW)](https://learn.microsoft.com/en-us/windows-hardware/test/wpt/event-tracing-for-windows) logger generator for Rust.
 
 Point the `gen_etw_wrapper!` macro at an ETW manifest file to emit a struct with a method for each event.
 
@@ -12,21 +12,18 @@ gen_etw_wrapper!("manifests/widgetservice.man", PROVIDER_WIDGETSERVICE -> Widget
 fn main() -> etw_wrapper::Result<()> {
     let logger = WidgetLogger::register()?;
 
-    // Signatures are derived from the manifest templates
+    // Signatures are derived from the manifest templates.
     logger.service_started("1.0.0", 8, FILETIME::default())?;
     logger.request_failed(0x12ABCDEF, 500, 42, "failed to succeed")?;
 
-    Ok(()) // provider is unregistered automatically when `logger` is dropped
+    Ok(()) // Dropping `logger` unregisters the provider.
 }
 ```
 
 > [!NOTE]
-> This crate is Windows-only. Use cfg gates if you need to use this alongside code for other platforms.
+> This crate is Windows-only. Use `#[cfg]` gates when sharing a crate with other platforms.
 
-The Windows APIs are linked directly, so there is no dependency on the `windows` crate and no
-version to keep in sync with the rest of your dependency tree. Types such as `GUID`, `FILETIME`,
-and `EVENT_DESCRIPTOR` are defined by this crate and are layout-compatible with their Win32
-counterparts.
+The Windows APIs are linked directly, so there is no dependency on the `windows` crate and no version to keep in sync with the rest of your dependency tree. Types such as `GUID`, `FILETIME`, and `EVENT_DESCRIPTOR` are defined by this crate and are layout-compatible with their Win32 counterparts.
 
 ## Getting started
 
@@ -34,25 +31,25 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-etw-wrapper = "0.1.0"
+etw-wrapper = "0.2.1"
 ```
 
 The `gen_etw_wrapper!` macro is available by default through the `macro` feature. If you only want the runtime pieces, disable default features:
 
 ```toml
 [dependencies]
-etw-wrapper = { version = "0.1.0", default-features = false }
+etw-wrapper = { version = "0.2.1", default-features = false }
 ```
 
-See the [Manual API](#manual-api) section for how to use the helpers directly.
+See [Manual API](#manual-api) for instructions on using the runtime helpers directly.
 
 ## Usage
 
 ### Generating a provider
 
-Invoke the macro at module scope with the path to your manifest. Paths are resolved relative to the crate's `CARGO_MANIFEST_DIR` (i.e. the directory containing your `Cargo.toml`).
+Invoke the macro at module scope with the path to your manifest. Paths are resolved relative to the invoking crate's `CARGO_MANIFEST_DIR`, the directory containing its `Cargo.toml`.
 
-This will generate a struct using the default naming convention of `[PascalCaseProvideSymbol]Logger`. For example the symbol `PROVIDER_WIDGETSERVICE` becomes `ProviderWidgetserviceLogger`.
+The generated struct uses the default naming convention `PascalCaseProviderSymbolLogger`. For example, `PROVIDER_WIDGETSERVICE` becomes `ProviderWidgetserviceLogger`.
 
 ```rust
 gen_etw_wrapper!("manifests/widgetservice.man");
@@ -84,7 +81,7 @@ gen_etw_wrapper!(
 
 This setting applies only to generated event methods. `WidgetLogger::register()` continues to return `etw_wrapper::Result<WidgetLogger>`.
 
-Event methods can also panic on invalid input, or on every error:
+Event methods can also panic on invalid input:
 
 ```rust
 gen_etw_wrapper!(
@@ -97,10 +94,10 @@ gen_etw_wrapper!(
 
 Input and Windows write failures are configured independently:
 
-| Option             | Errors covered                                                          |
-|--------------------|-------------------------------------------------------------------------|
-| `panic_on_input`   | Errors detected while validating or preparing caller-provided fields.   |
-| `panic_on_write`   | Errors returned by the Windows event writer.                            |
+| Option           | Errors covered                                                        |
+|------------------|-----------------------------------------------------------------------|
+| `panic_on_input` | Errors detected while validating or preparing caller-provided fields |
+| `panic_on_write` | Errors returned by the Windows event writer                          |
 
 Both options accept `true`, `false` (the default), or a Rust `cfg(...)` predicate:
 
@@ -141,9 +138,9 @@ impl WidgetLogger {
 ```
 
 > [!IMPORTANT]
-> The macro emits events but does not build or register the provider's message and metadata resource tables. Consumers will need the manifest registered seperately. This can be handled via a combination of `mc.exe` and `wevtutil.exe`.
-> 
-> For a simple way of compiling and embedding the resources, use a build-time helper such as [`embed-resource`](https://crates.io/crates/embed-resource).
+> The macro emits events but does not compile or register the provider's message and metadata resource tables. Applications that need decoded event names, fields, and messages must handle those resources separately, for example with `mc.exe` and `wevtutil.exe`.
+>
+> To compile and embed the resources, use a build-time helper such as [`embed-resource`](https://crates.io/crates/embed-resource).
 
 ## Type mapping
 
@@ -170,12 +167,11 @@ The macro maps manifest `inType` values to Rust parameter types as follows:
 | `win:AnsiString`                                            | `&[u8]`        | Caller supplies provider-code-page bytes and the final NUL                       |
 | `win:AnsiString` with `outType="win:Utf8/win:Json/win:Xml"` | `&str`         | Encoded as UTF-8, interior NULs become spaces                                    |
 | `win:Binary`                                                | `&[u8]`        | `length="N"` becomes `&[u8; N]`, `length="Field"` derives that field (see below) |
-| `win:SID`                                                   | `&field::Sid`  | Build from a raw SID pointer via `unsafe Sid::from_psid`, or borrow an owned `SidBuf` |
+| `win:SID`                                                   | `&field::Sid`  | Borrow a raw SID with the unsafe `Sid::from_psid`, or use an owned `SidBuf`          |
 
 ### Arrays
 
-The macro supports the manifest `count` attribute for every input type in the table above.
-A constant count is enforced at the type level:
+The macro supports the manifest `count` attribute for every input type in the table above. A constant count is enforced at the type level:
 
 ```xml
 <data name="Values" inType="win:UInt32" count="3"/>
@@ -196,22 +192,22 @@ A field-reference count is derived from the array and is not exposed as a separa
 fn event(&self, values: &[u32]) -> Result<()>
 ```
 
-Scalar arrays use `&[T; N]` or `&[T]`. String arrays use arrays or slices of `&str`; provider-code-page ANSI strings use `&[u8]`; SID arrays use `&field::Sid`. The generated method packs variable-length elements into the contiguous layout expected by ETW. Fixed-length binary arrays use `&[[u8; LENGTH]; COUNT]` for two-dimensional fixed sizes. When both binary `length` and`count` are field references, the method accepts a slice of byte slices, derives both fields, and returns `ERROR_INVALID_DATA` if the elements do not all have the same length.
+Scalar arrays use `&[T; N]` or `&[T]`. String arrays use arrays or slices of `&str`; provider-code-page ANSI strings use `&[u8]`; and SID arrays use `&field::Sid`. The generated method packs variable-length elements into the contiguous layout expected by ETW. Fixed-length binary arrays use `&[[u8; LENGTH]; COUNT]` for two-dimensional fixed sizes.
 
-### Variable-Length Fields
+When both binary `length` and `count` are field references, the method accepts a slice of byte slices and derives both fields. It returns `Error::MismatchedArrayLengths` if the elements do not all have the same length.
+
+### Variable-length fields
 
 #### Binary
 
-When a `win:Binary` field uses `length="OtherField"`, the raw event structure expects to receive the length in that field. The generated method does not expose this field. It is derived internally from the slice's length.
-
-As an example:
+When a `win:Binary` field uses `length="OtherField"`, the raw event structure expects the length in that field. The generated method derives the field from the slice length instead of exposing it as a parameter:
 
 ```xml
 <data name="BlobSize" inType="win:UInt32"/>
 <data name="Blob"     inType="win:Binary" length="BlobSize"/>
 ```
 
-generates the method 
+This template generates:
 
 ```rust
 fn blob_written(&self, blob: &[u8]) -> Result<()>
@@ -219,11 +215,11 @@ fn blob_written(&self, blob: &[u8]) -> Result<()>
 
 #### Strings
 
-For `win:UnicodeString length="N"`, the generated method emits exactly N UTF-16 code units as required by ETW: at most N-1 content units, space padding when needed, and a terminating NUL.
+For `win:UnicodeString length="N"`, the generated method emits exactly `N` UTF-16 code units as required by ETW: at most `N - 1` content units, space padding when needed, and a terminating NUL.
 
 A default `win:AnsiString` uses the provider's ANSI code page, so its generated parameter remains raw bytes. A fixed-length default ANSI field becomes `&[u8; N]`; the array must already contain the required padding and final NUL. If the manifest explicitly selects `outType="win:Utf8"`, `win:Json`, or `win:Xml`, the generated method accepts `&str`, performs UTF-8 encoding, and handles fixed-length padding and truncation.
 
-A string `length="OtherField"` names the field carrying the width, which decoders read instead of scanning for a NUL. Unlike a binary length, that field stays a parameter, because it sets the width rather than describing a value the macro already has:
+A string `length="OtherField"` names the field carrying the width, which decoders read instead of scanning for a NUL. Unlike a binary length, that field stays a parameter because it sets the width rather than describing a value the macro already has:
 
 ```xml
 <data name="NameLength" inType="win:UInt16"/>
@@ -234,19 +230,19 @@ A string `length="OtherField"` names the field carrying the width, which decoder
 fn named(&self, name_length: u16, name: &str) -> Result<()>
 ```
 
-Each call encodes `name` to exactly `name_length` code units, padding or truncating as it does for a constant length, and returns `Error::EmptyFixedLengthString` if the width leaves no room for the terminator. A default `win:AnsiString` arrives already encoded, so its buffer must match the declared width itself; a mismatch returns `Error::LengthMismatch`.
+Each call encodes `name` to exactly `name_length` code units, padding or truncating as it does for a constant length. It returns `Error::EmptyFixedLengthString` if the width leaves no room for the terminator. A default `win:AnsiString` arrives already encoded, so its buffer must match the declared width; a mismatch returns `Error::LengthMismatch`.
 
 ## Manual API
 
-If you prefer not to use the macro, you can use the runtime directly. The `EtwLogger` automatically handles the internal callbacks and ensures that deregistration happens when the logger is dropped. It can be moved and stored freely.
+If you prefer not to use the macro, you can use the runtime directly. `EtwLogger` handles the ETW callbacks and unregisters the provider when it is dropped. It can be moved and stored freely.
 
-The `field` module provides converters for passing fields to the `write` function safely: `scalar` and `slice` for fixed-size values; `str16`/`to_u16cstring` and `to_u16cstring_fixed_len` for UTF-16 strings; `str8`/`to_cstring` and `to_cstring_fixed_len` for ANSI strings; `bytes` for binary blobs; and `sid` for a `Sid`.
+The `field` module provides converters for passing fields to `write`: `scalar` and `slice` for fixed-size values; `str16`, `to_u16cstring`, and `to_u16cstring_fixed_len` for UTF-16 strings; `str8` for provider-code-page byte buffers; `to_cstring` and `to_cstring_fixed_len` for explicit UTF-8 string output types; `bytes` for binary blobs; and `sid` for a `Sid`.
 
-`scalar` and `slice` accept only the types listed as fixed-size in the table above, through the sealed `field::Scalar` trait: the integer and float primitives, `usize` for `win:Pointer`, and `GUID`, `FILETIME`, and `SYSTEMTIME`. Passing anything else is a compile error, so a string cannot be serialized as its pointer by mistake and a type of your own cannot copy its padding bytes into the payload.
+`scalar` and `slice` accept the integer and floating-point primitives, `usize` for `win:Pointer`, and the `GUID`, `FILETIME`, and `SYSTEMTIME` types. The sealed `field::Scalar` trait prevents strings or custom types with padding from being copied into an event by mistake.
 
-The converters that can reject their input return `Result`, reporting the same errors the generated event methods do: a buffer that is not NUL-terminated gives `Error::MissingNulTerminator`, and a fixed length with no room for the terminator gives `Error::EmptyFixedLengthString`.
+String helpers return `Error::MissingNulTerminator` for unterminated buffers and `Error::EmptyFixedLengthString` when a fixed length has no room for the terminator.
 
-Before logging you can call `enabled()` to check that your event write won't be a no-op.
+Call `enabled()` before preparing descriptors when you want to skip work for an event the provider is not currently accepting. Pass descriptors to `write()` in the same order as the fields in the manifest template.
 
 ```rust
 use etw_wrapper::{EVENT_DESCRIPTOR, EtwLogger, GUID, field::*};

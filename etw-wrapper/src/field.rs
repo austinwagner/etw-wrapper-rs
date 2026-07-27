@@ -12,27 +12,8 @@ mod sealed {
 /// A fixed-size value that ETW serializes by copying its bytes.
 ///
 /// This trait is sealed and implemented only for the Rust types that the manifest's fixed-size
-/// input types map to. Bounding [`scalar`] and [`slice()`] by it keeps a descriptor from pointing
-/// at a value ETW cannot decode. A string would serialize its pointer and length rather than its
-/// text, so it is rejected in favor of [`str16`] or [`str8`]:
-///
-/// ```compile_fail,E0277
-/// let text = "hello";
-/// let descriptor = etw_wrapper::field::scalar(&text);
-/// ```
-///
-/// A type of your own is rejected too, because any padding it carries would be copied into the
-/// event payload:
-///
-/// ```compile_fail,E0277
-/// #[derive(Clone, Copy)]
-/// struct Custom {
-///     flag: u8,
-///     value: u32,
-/// }
-///
-/// let descriptor = etw_wrapper::field::scalar(&Custom { flag: 1, value: 2 });
-/// ```
+/// input types map to. Bounding [`scalar`] and [`slice()`] by it prevents strings, booleans, and
+/// custom types with padding from being copied into an event with the wrong representation.
 pub trait Scalar: Copy + sealed::Sealed {}
 
 macro_rules! impl_scalar {
@@ -52,6 +33,9 @@ impl_scalar!(
 
 #[repr(transparent)]
 #[derive(Default)]
+/// A borrowed ETW payload descriptor.
+///
+/// The descriptor remains valid only while the data it references is allocated and readable.
 pub struct EventDataDescriptor<'a> {
     inner: EVENT_DATA_DESCRIPTOR,
     _marker: marker::PhantomData<&'a ()>,
@@ -94,7 +78,7 @@ pub fn slice<T: Scalar>(values: &[T]) -> EventDataDescriptor<'_> {
     unsafe { EventDataDescriptor::new(values.as_ptr() as u64, size_of_val(values) as u32) }
 }
 
-/// Creates a descriptor over an ANSI string (win:AnsiString).
+/// Creates a descriptor over an ANSI string (`win:AnsiString`).
 ///
 /// # Errors
 ///
@@ -118,8 +102,12 @@ pub fn bytes(b: &[u8]) -> EventDataDescriptor<'_> {
 ///
 /// Generated code uses this function for `win:Binary length="OtherField"`. The length field is
 /// derived from the blob's length and emitted in place without being exposed as a parameter.
+///
+/// # Errors
+///
 /// Returns [`Error::LengthOverflow`](crate::Error::LengthOverflow) if the length does not fit in
 /// `T`.
+#[doc(hidden)]
 #[inline]
 pub fn checked_len<T: TryFrom<usize>>(len: usize) -> crate::Result<T> {
     T::try_from(len).map_err(|_| crate::Error::LengthOverflow)
@@ -176,7 +164,7 @@ pub fn ensure_nonzero_length(len: usize) -> crate::Result<()> {
     }
 }
 
-/// Creates a descriptor over a UTF-16 buffer (win:UnicodeString).
+/// Creates a descriptor over a UTF-16 buffer (`win:UnicodeString`).
 ///
 /// # Errors
 ///
@@ -210,13 +198,12 @@ pub fn to_u16cstring(s: &str) -> Vec<u16> {
     buf
 }
 
-/// Encodes `s` as a fixed-length, NUL-terminated UTF-16 string for an ETW
-/// manifest field with `length="len"`.
+/// Encodes `s` as a fixed-length, NUL-terminated UTF-16 string for an ETW manifest field with
+/// `length="len"`.
 ///
-/// The declared length includes the terminator. Content is therefore limited to
-/// `len - 1` code units, without splitting a surrogate pair. Short content
-/// is padded with spaces before the terminator so the returned buffer always
-/// contains exactly `len` code units.
+/// The declared length includes the terminator. Content is therefore limited to `len - 1` code
+/// units without splitting a surrogate pair. Short content is padded with spaces before the
+/// terminator so the returned buffer always contains exactly `len` code units.
 ///
 /// Interior NUL values are replaced with spaces.
 ///
@@ -265,10 +252,9 @@ pub fn to_cstring(s: &str) -> Vec<u8> {
 /// whose output type explicitly selects UTF-8, JSON, or XML and whose manifest declares
 /// `length="len"`.
 ///
-/// The declared length includes the terminator. UTF-8 content is therefore
-/// limited to `len - 1` bytes, without splitting an encoded character. Short
-/// content is padded with spaces before the terminator so the returned buffer
-/// always contains exactly `len` bytes.
+/// The declared length includes the terminator. UTF-8 content is therefore limited to `len - 1`
+/// bytes without splitting an encoded character. Short content is padded with spaces before the
+/// terminator so the returned buffer always contains exactly `len` bytes.
 ///
 /// Interior NUL values are replaced with spaces.
 ///

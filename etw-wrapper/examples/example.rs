@@ -5,9 +5,8 @@
 
 use etw_wrapper::{FILETIME, gen_etw_wrapper};
 
-// The path is resolved relative to this crate's manifest directory
-// By default each provider generates a PascalCaseSymbolLogger struct
-// Here ProviderWidgetserviceLogger is overridden with the name WidgetLogger
+// Manifest paths are relative to this crate's manifest directory. This override names the
+// generated provider `WidgetLogger` instead of `ProviderWidgetserviceLogger`.
 gen_etw_wrapper!("manifests/widgetservice.man", PROVIDER_WIDGETSERVICE -> WidgetLogger);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
