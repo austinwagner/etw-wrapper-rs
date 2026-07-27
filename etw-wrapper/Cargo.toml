@@ -21,7 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 etw-wrapper-macro = { version = "0.2", optional = true, path = "../etw-wrapper-macro" }
-windows = { workspace = true }
+windows-link = { workspace = true }
 safe-sid = { workspace = true }
 
 [features]
@@ -47,6 +47,3 @@ required-features = ["macro"]
 [[test]]
 name = "hex"
 required-features = ["macro"]
-
-[dev-dependencies]
-windows = { workspace = true }

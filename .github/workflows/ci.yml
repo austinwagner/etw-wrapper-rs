@@ -31,6 +31,12 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Verify generated bindings
+        run: |
+          cargo clippy --locked --package xtask --all-targets -- -D warnings
+          cargo xtask regenerate-bindings
+          git diff --exit-code -- etw-wrapper/src/bindings.rs
+
       - name: Run Clippy with default features
         run: cargo clippy --workspace --locked --all-targets -- -D warnings
 

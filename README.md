@@ -23,6 +23,11 @@ fn main() -> etw_wrapper::Result<()> {
 > [!NOTE]
 > This crate is Windows-only. Use cfg gates if you need to use this alongside code for other platforms.
 
+The Windows APIs are linked directly, so there is no dependency on the `windows` crate and no
+version to keep in sync with the rest of your dependency tree. Types such as `GUID`, `FILETIME`,
+and `EVENT_DESCRIPTOR` are defined by this crate and are layout-compatible with their Win32
+counterparts.
+
 ## Getting started
 
 Add the crate to your `Cargo.toml`:
@@ -165,7 +170,7 @@ The macro maps manifest `inType` values to Rust parameter types as follows:
 | `win:AnsiString`                                            | `&[u8]`        | Caller supplies provider-code-page bytes and the final NUL                       |
 | `win:AnsiString` with `outType="win:Utf8/win:Json/win:Xml"` | `&str`         | Encoded as UTF-8, interior NULs become spaces                                    |
 | `win:Binary`                                                | `&[u8]`        | `length="N"` becomes `&[u8; N]`, `length="Field"` derives that field (see below) |
-| `win:SID`                                                   | `&field::Sid`  | Build from a `PSID` via `unsafe Sid::from_psid`, or borrow an owned `SidBuf`     |
+| `win:SID`                                                   | `&field::Sid`  | Build from a raw SID pointer via `unsafe Sid::from_psid`, or borrow an owned `SidBuf` |
 
 ### Arrays
 

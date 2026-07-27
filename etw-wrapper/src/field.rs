@@ -25,7 +25,7 @@ impl<'a> EventDataDescriptor<'a> {
             inner: EVENT_DATA_DESCRIPTOR {
                 Ptr: ptr,
                 Size: size,
-                ..Default::default()
+                Anonymous: Default::default(),
             },
             _marker: marker::PhantomData,
         }
@@ -68,14 +68,11 @@ pub fn bytes(b: &[u8]) -> EventDataDescriptor<'_> {
 ///
 /// Generated code uses this function for `win:Binary length="OtherField"`. The length field is
 /// derived from the blob's length and emitted in place without being exposed as a parameter.
-/// Returns `ERROR_ARITHMETIC_OVERFLOW` if the length does not fit in `T`.
+/// Returns [`Error::LengthOverflow`](crate::Error::LengthOverflow) if the length does not fit in
+/// `T`.
 #[inline]
 pub fn checked_len<T: TryFrom<usize>>(len: usize) -> crate::Result<T> {
-    T::try_from(len).map_err(|_| {
-        windows::Win32::Foundation::ERROR_ARITHMETIC_OVERFLOW
-            .to_hresult()
-            .into()
-    })
+    T::try_from(len).map_err(|_| crate::Error::LengthOverflow)
 }
 
 /// Returns the common length of a collection of byte slices.
@@ -92,9 +89,7 @@ pub fn uniform_len<T: AsRef<[u8]>>(values: &[T]) -> crate::Result<usize> {
     if values.iter().all(|value| value.as_ref().len() == len) {
         Ok(len)
     } else {
-        Err(windows::Win32::Foundation::ERROR_INVALID_DATA
-            .to_hresult()
-            .into())
+        Err(crate::Error::MismatchedArrayLengths)
     }
 }
 
@@ -105,9 +100,7 @@ pub fn ensure_len(actual: usize, expected: usize) -> crate::Result<()> {
     if actual == expected {
         Ok(())
     } else {
-        Err(windows::Win32::Foundation::ERROR_INVALID_DATA
-            .to_hresult()
-            .into())
+        Err(crate::Error::LengthMismatch)
     }
 }
 
@@ -118,9 +111,7 @@ pub fn ensure_nul_terminated(buf: &[u8]) -> crate::Result<()> {
     if buf.last() == Some(&0) {
         Ok(())
     } else {
-        Err(windows::Win32::Foundation::ERROR_INVALID_DATA
-            .to_hresult()
-            .into())
+        Err(crate::Error::MissingNulTerminator)
     }
 }
 
@@ -131,9 +122,7 @@ pub fn ensure_nonzero_length(len: usize) -> crate::Result<()> {
     if len > 0 {
         Ok(())
     } else {
-        Err(windows::Win32::Foundation::ERROR_INVALID_DATA
-            .to_hresult()
-            .into())
+        Err(crate::Error::EmptyFixedLengthString)
     }
 }
 

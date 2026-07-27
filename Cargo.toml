@@ -4,6 +4,7 @@ members = [
     "etw-wrapper",
     "etw-wrapper-macro",
     "test-crates/renamed-dependency",
+    "xtask",
 ]
 default-members = [
     "etw-wrapper",
@@ -24,16 +25,11 @@ categories = ["os::windows-apis", "api-bindings"]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde-xml-rs = "0.8"
-windows = { version = "0.62", features = [
-    "Win32_Foundation",
-    "Win32_System_Diagnostics_Etw",
-    "Win32_Security"
-] }
+windows-link = "0.2"
 syn = { version = "3", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
 proc-macro-crate = "3"
 convert_case = "0.11"
 unicode-ident = "1"
-safe-sid = "0.2"
-
+safe-sid = "1.0"
