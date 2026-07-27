@@ -1,4 +1,4 @@
-//! Serialization primitives that turn typed values into [`EVENT_DATA_DESCRIPTOR`] instances.
+//! Serialization primitives that turn typed values into [`EventDataDescriptor`] instances.
 
 use crate::EVENT_DATA_DESCRIPTOR;
 use std::marker;

@@ -26,7 +26,8 @@
 //!
 //! To avoid the procedural macro, call [`EtwLogger::register`], check [`EtwLogger::enabled`]
 //! before each call to [`EtwLogger::write`], and convert parameters to
-//! [`EVENT_DATA_DESCRIPTOR`] instances with the helpers in the [`field`] module.
+//! [`EventDataDescriptor`](field::EventDataDescriptor) instances with the helpers in the
+//! [`field`] module.
 //!
 //! ```no_run
 //! use etw_wrapper::{EVENT_DESCRIPTOR, EtwLogger, GUID, field::*};
@@ -57,4 +58,8 @@ pub use context::EtwLogger;
 pub use error::{Error, Result};
 
 // These generated types belong to this crate, so callers are not tied to a `windows` crate version.
-pub use types::{EVENT_DATA_DESCRIPTOR, EVENT_DESCRIPTOR, FILETIME, GUID, SYSTEMTIME};
+pub use types::{EVENT_DESCRIPTOR, FILETIME, GUID, SYSTEMTIME};
+
+// Callers build payloads with `field::EventDataDescriptor`, which borrows the data it points at.
+// The raw type stays internal because its union field type is not nameable outside this crate.
+pub(crate) use types::EVENT_DATA_DESCRIPTOR;
