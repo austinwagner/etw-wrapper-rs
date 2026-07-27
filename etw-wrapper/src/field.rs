@@ -65,6 +65,7 @@ impl<'a> EventDataDescriptor<'a> {
     /// If `size` is nonzero, `ptr` must point to a readable memory region of at least `size`
     /// bytes. That region must remain allocated and readable for the entire lifetime `'a`, and it
     /// must not be mutated in a way that races with an event write using this descriptor.
+    #[must_use]
     pub unsafe fn new(ptr: u64, size: u32) -> Self {
         Self {
             inner: EVENT_DATA_DESCRIPTOR {
@@ -78,6 +79,7 @@ impl<'a> EventDataDescriptor<'a> {
 }
 
 /// Creates a descriptor over a single [`Scalar`] value.
+#[must_use]
 #[inline]
 pub fn scalar<T: Scalar>(v: &T) -> EventDataDescriptor<'_> {
     // SAFETY: the descriptor borrows `v`, which remains readable for the returned lifetime.
@@ -85,6 +87,7 @@ pub fn scalar<T: Scalar>(v: &T) -> EventDataDescriptor<'_> {
 }
 
 /// Creates a descriptor over a contiguous slice of [`Scalar`] values.
+#[must_use]
 #[inline]
 pub fn slice<T: Scalar>(values: &[T]) -> EventDataDescriptor<'_> {
     // SAFETY: the descriptor borrows `values`, which remains readable for the returned lifetime.
@@ -104,6 +107,7 @@ pub fn str8(buf: &[u8]) -> crate::Result<EventDataDescriptor<'_>> {
 }
 
 /// Creates a descriptor over a byte slice (win:Binary).
+#[must_use]
 #[inline]
 pub fn bytes(b: &[u8]) -> EventDataDescriptor<'_> {
     // SAFETY: the descriptor borrows `b`, which remains readable for the returned lifetime.
@@ -191,6 +195,7 @@ pub fn str16(buf: &[u16]) -> crate::Result<EventDataDescriptor<'_>> {
 /// Encodes `s` as NUL-terminated UTF-16.
 ///
 /// Interior NUL values are replaced with spaces.
+#[must_use]
 #[inline]
 pub fn to_u16cstring(s: &str) -> Vec<u16> {
     let mut buf = Vec::with_capacity(s.len() + 1);
@@ -247,6 +252,7 @@ pub fn to_u16cstring_fixed_len(s: &str, len: usize) -> crate::Result<Vec<u16>> {
 /// selects UTF-8, JSON, or XML.
 ///
 /// Interior NUL values are replaced with spaces.
+#[must_use]
 #[inline]
 pub fn to_cstring(s: &str) -> Vec<u8> {
     s.bytes()
@@ -294,6 +300,7 @@ pub fn to_cstring_fixed_len(s: &str, len: usize) -> crate::Result<Vec<u8>> {
 }
 
 /// Creates a descriptor over a [`Sid`].
+#[must_use]
 #[inline]
 pub fn sid(sid: &Sid) -> EventDataDescriptor<'_> {
     let bytes = sid.as_bytes();

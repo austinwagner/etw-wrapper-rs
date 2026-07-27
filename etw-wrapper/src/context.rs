@@ -27,6 +27,7 @@ impl EtwLogger {
     }
 
     /// Returns whether the provider is enabled for the specified level and keyword.
+    #[must_use]
     #[inline]
     pub fn enabled(&self, level: u8, keyword: u64) -> bool {
         self.ctx.enabled(level, keyword)
