@@ -1,9 +1,54 @@
 //! Serialization primitives that turn typed values into [`EventDataDescriptor`] instances.
 
-use crate::EVENT_DATA_DESCRIPTOR;
+use crate::{EVENT_DATA_DESCRIPTOR, FILETIME, GUID, SYSTEMTIME};
 use std::marker;
 
 pub use safe_sid::{Sid, SidBuf};
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A fixed-size value that ETW serializes by copying its bytes.
+///
+/// This trait is sealed and implemented only for the Rust types that the manifest's fixed-size
+/// input types map to. Bounding [`scalar`] and [`slice()`] by it keeps a descriptor from pointing
+/// at a value ETW cannot decode. A string would serialize its pointer and length rather than its
+/// text, so it is rejected in favor of [`str16`] or [`str8`]:
+///
+/// ```compile_fail,E0277
+/// let text = "hello";
+/// let descriptor = etw_wrapper::field::scalar(&text);
+/// ```
+///
+/// A type of your own is rejected too, because any padding it carries would be copied into the
+/// event payload:
+///
+/// ```compile_fail,E0277
+/// #[derive(Clone, Copy)]
+/// struct Custom {
+///     flag: u8,
+///     value: u32,
+/// }
+///
+/// let descriptor = etw_wrapper::field::scalar(&Custom { flag: 1, value: 2 });
+/// ```
+pub trait Scalar: Copy + sealed::Sealed {}
+
+macro_rules! impl_scalar {
+    ($($type:ty),+ $(,)?) => {
+        $(
+            impl sealed::Sealed for $type {}
+            impl Scalar for $type {}
+        )+
+    };
+}
+
+// `bool` is deliberately absent: ETW encodes win:Boolean as a 32-bit value, so generated code
+// widens it to `i32` before building a descriptor.
+impl_scalar!(
+    i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, usize, GUID, FILETIME, SYSTEMTIME,
+);
 
 #[repr(transparent)]
 #[derive(Default)]
@@ -32,16 +77,16 @@ impl<'a> EventDataDescriptor<'a> {
     }
 }
 
-/// Creates a descriptor over a `Copy` scalar.
+/// Creates a descriptor over a single [`Scalar`] value.
 #[inline]
-pub fn scalar<T: Copy>(v: &T) -> EventDataDescriptor<'_> {
+pub fn scalar<T: Scalar>(v: &T) -> EventDataDescriptor<'_> {
     // SAFETY: the descriptor borrows `v`, which remains readable for the returned lifetime.
     unsafe { EventDataDescriptor::new(v as *const T as u64, size_of::<T>() as u32) }
 }
 
-/// Creates a descriptor over a contiguous slice of `Copy` values.
+/// Creates a descriptor over a contiguous slice of [`Scalar`] values.
 #[inline]
-pub fn slice<T: Copy>(values: &[T]) -> EventDataDescriptor<'_> {
+pub fn slice<T: Scalar>(values: &[T]) -> EventDataDescriptor<'_> {
     // SAFETY: the descriptor borrows `values`, which remains readable for the returned lifetime.
     unsafe { EventDataDescriptor::new(values.as_ptr() as u64, size_of_val(values) as u32) }
 }
@@ -375,6 +420,20 @@ mod tests {
         let descriptor = slice(&values);
         assert_eq!(descriptor.inner.Size, 3 * size_of::<u32>() as u32);
         assert_eq!(descriptor.inner.Ptr, values.as_ptr() as u64);
+    }
+
+    #[test]
+    fn scalar_covers_the_abi_struct_types() {
+        // These are the only non-primitive types `Scalar` accepts, and ETW decodes each by its
+        // exact ABI size, so a descriptor must span the whole value.
+        let guid = GUID::from_u128(0);
+        assert_eq!(scalar(&guid).inner.Size, 16);
+
+        let filetime = FILETIME::default();
+        assert_eq!(scalar(&filetime).inner.Size, 8);
+
+        let systemtime = SYSTEMTIME::default();
+        assert_eq!(scalar(&systemtime).inner.Size, 16);
     }
 
     #[test]

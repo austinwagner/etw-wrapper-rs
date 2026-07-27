@@ -240,7 +240,9 @@ Each call encodes `name` to exactly `name_length` code units, padding or truncat
 
 If you prefer not to use the macro, you can use the runtime directly. The `EtwLogger` automatically handles the internal callbacks and ensures that deregistration happens when the logger is dropped. It can be moved and stored freely.
 
-The `field` module provides converters for passing fields to the `write` function safely: `scalar` for any `Copy` value; `str16`/`to_u16cstring` and `to_u16cstring_fixed_len` for UTF-16 strings; `str8`/`to_cstring` and `to_cstring_fixed_len` for ANSI strings; `bytes` for binary blobs; and `sid` for a `Sid`.
+The `field` module provides converters for passing fields to the `write` function safely: `scalar` and `slice` for fixed-size values; `str16`/`to_u16cstring` and `to_u16cstring_fixed_len` for UTF-16 strings; `str8`/`to_cstring` and `to_cstring_fixed_len` for ANSI strings; `bytes` for binary blobs; and `sid` for a `Sid`.
+
+`scalar` and `slice` accept only the types listed as fixed-size in the table above, through the sealed `field::Scalar` trait: the integer and float primitives, `usize` for `win:Pointer`, and `GUID`, `FILETIME`, and `SYSTEMTIME`. Passing anything else is a compile error, so a string cannot be serialized as its pointer by mistake and a type of your own cannot copy its padding bytes into the payload.
 
 The converters that can reject their input return `Result`, reporting the same errors the generated event methods do: a buffer that is not NUL-terminated gives `Error::MissingNulTerminator`, and a fixed length with no room for the terminator gives `Error::EmptyFixedLengthString`.
 
