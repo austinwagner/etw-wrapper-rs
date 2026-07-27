@@ -14,6 +14,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  msrv:
+    name: Check MSRV
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust 1.88
+        run: rustup toolchain install 1.88.0 --profile minimal --no-self-update
+
+      - name: Check with MSRV
+        run: cargo +1.88.0 check --locked --all-targets --all-features
+
+  semver:
+    name: Check semver
+    if: github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/')
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: etw-wrapper
+
   test:
     name: Test
     runs-on: windows-latest
@@ -38,16 +66,16 @@ jobs:
           git diff --exit-code -- etw-wrapper/src/bindings.rs
 
       - name: Run Clippy with default features
-        run: cargo clippy --workspace --locked --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Run Clippy with all features
-        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Test with default features
-        run: cargo test --workspace --locked
+        run: cargo test --locked
 
       - name: Test with all features
-        run: cargo test --workspace --locked --all-features
+        run: cargo test --locked --all-features
 
       - name: Verify etw-wrapper-macro package
         run: cargo package --package etw-wrapper-macro --locked
