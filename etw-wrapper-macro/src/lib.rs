@@ -208,6 +208,13 @@ impl Parse for WrapperArgs {
             };
             input.parse::<Token![->]>()?;
             let name: Ident = input.parse()?;
+            if overrides.iter().any(|o: &NameOverride| o.key == key) {
+                return Err(syn::Error::new(
+                    key_span,
+                    format!("duplicate name override for provider symbol `{key}`"),
+                ));
+            }
+
             overrides.push(NameOverride {
                 key,
                 key_span,
@@ -639,6 +646,14 @@ fn build_value_plan(
     let string_length = |length: &Length| -> anyhow::Result<ElementLength> {
         match length {
             Length::Implicit => Ok(ElementLength::Implicit),
+            // The declared width includes the terminator, so a zero-width string could never be
+            // encoded. Rejecting it here keeps every accepted `Fixed` length usable.
+            Length::Constant(0) => anyhow::bail!(
+                "string field {} in event {} of provider {} declares length=\"0\", which leaves no room for the NUL terminator",
+                field.name,
+                ev.symbol,
+                p.symbol
+            ),
             Length::Constant(length) => Ok(ElementLength::Fixed(*length as usize)),
             // A referenced length declares a fixed field width, so every encoded string must have
             // exactly that length. Decoders read the declared count and never scan for a NUL.
@@ -805,12 +820,8 @@ fn plan_string_value(
         let plain = format_ident!("{plain}");
         let fixed = format_ident!("{fixed}");
         let (validation, encode) = match length {
-            ElementLength::Fixed(length) => (
-                Some(quote! {
-                    #runtime::field::ensure_nonzero_length(#length)?;
-                }),
-                quote!(#runtime::field::#fixed(#id, #length)?),
-            ),
+            // A constant length is validated during expansion, so only the encoding remains.
+            ElementLength::Fixed(length) => (None, quote!(#runtime::field::#fixed(#id, #length)?)),
             ElementLength::FieldRef(from) => {
                 let declared = &idents[from];
                 (
@@ -840,12 +851,9 @@ fn plan_string_value(
             let ty = array_param_ty(quote!(&str), value.cardinality)?;
             let (validation, encode) = match length {
                 ElementLength::Implicit => (None, quote!(#runtime::field::#plain(value))),
-                ElementLength::Fixed(length) => (
-                    Some(quote! {
-                        #runtime::field::ensure_nonzero_length(#length)?;
-                    }),
-                    quote!(#runtime::field::#fixed(value, #length)?),
-                ),
+                ElementLength::Fixed(length) => {
+                    (None, quote!(#runtime::field::#fixed(value, #length)?))
+                }
                 ElementLength::FieldRef(from) => {
                     let length = &idents[from];
                     (
@@ -1735,6 +1743,24 @@ mod tests {
     }
 
     #[test]
+    fn wrapper_args_reject_duplicate_name_overrides() {
+        let duplicate = syn::parse_str::<WrapperArgs>(
+            r#""manifest.man", PROVIDER -> First, PROVIDER -> Second"#,
+        )
+        .err()
+        .expect("duplicate override should fail");
+        assert!(
+            duplicate.to_string().contains("duplicate name override"),
+            "unexpected message: {duplicate}"
+        );
+
+        // Overriding different providers stays valid
+        let args: WrapperArgs =
+            syn::parse_str(r#""manifest.man", PROVIDER_A -> First, PROVIDER_B -> Second"#).unwrap();
+        assert_eq!(args.overrides.len(), 2);
+    }
+
+    #[test]
     fn wrapper_args_parse_unit_return_setting() {
         let args: WrapperArgs = syn::parse_str(
             r#""manifest.man", event_methods_return_unit = true, PROVIDER -> Logger"#,
@@ -2052,6 +2078,27 @@ mod tests {
         // Blob stays exposed
         assert!(plans[1].param.is_some());
         assert_eq!(exposed_count(&plans), 1);
+    }
+
+    #[test]
+    fn zero_constant_length_strings_are_rejected_during_expansion() {
+        // A zero width cannot hold the terminator, so this is caught at expansion rather than
+        // producing a method that fails on every call.
+        for win_type in [
+            WinType::UnicodeString(Length::Constant(0)),
+            WinType::AnsiString(Length::Constant(0), AnsiEncoding::Utf8),
+            WinType::AnsiString(Length::Constant(0), AnsiEncoding::ProviderAnsi),
+        ] {
+            let scalar = event(vec![("Name", win_type.clone())]);
+            assert!(plan(&scalar).is_err(), "{win_type:?} should be rejected");
+
+            let mut array = event(vec![("Names", win_type.clone())]);
+            array.params[0].count = Count::Constant(2);
+            assert!(
+                plan(&array).is_err(),
+                "{win_type:?} array should be rejected"
+            );
+        }
     }
 
     #[test]
