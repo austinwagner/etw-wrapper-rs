@@ -242,6 +242,8 @@ If you prefer not to use the macro, you can use the runtime directly. The `EtwLo
 
 The `field` module provides converters for passing fields to the `write` function safely: `scalar` for any `Copy` value; `str16`/`to_u16cstring` and `to_u16cstring_fixed_len` for UTF-16 strings; `str8`/`to_cstring` and `to_cstring_fixed_len` for ANSI strings; `bytes` for binary blobs; and `sid` for a `Sid`.
 
+The converters that can reject their input return `Result`, reporting the same errors the generated event methods do: a buffer that is not NUL-terminated gives `Error::MissingNulTerminator`, and a fixed length with no room for the terminator gives `Error::EmptyFixedLengthString`.
+
 Before logging you can call `enabled()` to check that your event write won't be a no-op.
 
 ```rust
@@ -254,7 +256,7 @@ let descriptor = EVENT_DESCRIPTOR { Id: 1, Level: 4, ..Default::default() };
 if ctx.enabled(descriptor.Level, descriptor.Keyword) {
     let version = to_u16cstring("1.0.0");
     let workers = 8u32;
-    ctx.write(&descriptor, &[str16(&version), scalar(&workers)])?;
+    ctx.write(&descriptor, &[str16(&version)?, scalar(&workers)])?;
 }
 ```
 

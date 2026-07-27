@@ -48,13 +48,14 @@ pub fn slice<T: Copy>(values: &[T]) -> EventDataDescriptor<'_> {
 
 /// Creates a descriptor over an ANSI string (win:AnsiString).
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the buffer is not NUL-terminated.
+/// Returns [`Error::MissingNulTerminator`](crate::Error::MissingNulTerminator) if the buffer is
+/// not NUL-terminated.
 #[inline]
-pub fn str8(buf: &[u8]) -> EventDataDescriptor<'_> {
-    assert_eq!(buf.last(), Some(&0));
-    bytes(buf)
+pub fn str8(buf: &[u8]) -> crate::Result<EventDataDescriptor<'_>> {
+    ensure_nul_terminated(buf)?;
+    Ok(bytes(buf))
 }
 
 /// Creates a descriptor over a byte slice (win:Binary).
@@ -128,15 +129,18 @@ pub fn ensure_nonzero_length(len: usize) -> crate::Result<()> {
 
 /// Creates a descriptor over a UTF-16 buffer (win:UnicodeString).
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the buffer is not NUL-terminated.
+/// Returns [`Error::MissingNulTerminator`](crate::Error::MissingNulTerminator) if the buffer is
+/// not NUL-terminated.
 #[inline]
-pub fn str16(buf: &[u16]) -> EventDataDescriptor<'_> {
-    assert_eq!(buf.last(), Some(&0));
+pub fn str16(buf: &[u16]) -> crate::Result<EventDataDescriptor<'_>> {
+    if buf.last() != Some(&0) {
+        return Err(crate::Error::MissingNulTerminator);
+    }
 
     // SAFETY: the descriptor borrows `buf`, which remains readable for the returned lifetime.
-    unsafe { EventDataDescriptor::new(buf.as_ptr() as u64, size_of_val(buf) as u32) }
+    Ok(unsafe { EventDataDescriptor::new(buf.as_ptr() as u64, size_of_val(buf) as u32) })
 }
 
 /// Encodes `s` as NUL-terminated UTF-16.
@@ -166,13 +170,13 @@ pub fn to_u16cstring(s: &str) -> Vec<u16> {
 ///
 /// Interior NUL values are replaced with spaces.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `len` is zero because a fixed-length ETW string must include a
-/// NUL terminator.
+/// Returns [`Error::EmptyFixedLengthString`](crate::Error::EmptyFixedLengthString) if `len` is
+/// zero, because a fixed-length ETW string must include a NUL terminator.
 #[inline]
-pub fn to_u16cstring_fixed_len(s: &str, len: usize) -> Vec<u16> {
-    assert!(len > 0, "len must include space for the NUL terminator");
+pub fn to_u16cstring_fixed_len(s: &str, len: usize) -> crate::Result<Vec<u16>> {
+    ensure_nonzero_length(len)?;
 
     let content_limit = len - 1;
     let mut buf = Vec::with_capacity(len);
@@ -191,7 +195,7 @@ pub fn to_u16cstring_fixed_len(s: &str, len: usize) -> Vec<u16> {
 
     buf.resize(content_limit, b' ' as u16);
     buf.push(0);
-    buf
+    Ok(buf)
 }
 
 /// Encodes `s` as NUL-terminated UTF-8 for a `win:AnsiString` field whose output type explicitly
@@ -217,13 +221,13 @@ pub fn to_cstring(s: &str) -> Vec<u8> {
 ///
 /// Interior NUL values are replaced with spaces.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `len` is zero because a fixed-length ETW string must include a NUL
-/// terminator.
+/// Returns [`Error::EmptyFixedLengthString`](crate::Error::EmptyFixedLengthString) if `len` is
+/// zero, because a fixed-length ETW string must include a NUL terminator.
 #[inline]
-pub fn to_cstring_fixed_len(s: &str, len: usize) -> Vec<u8> {
-    assert!(len > 0, "len must include space for the NUL terminator");
+pub fn to_cstring_fixed_len(s: &str, len: usize) -> crate::Result<Vec<u8>> {
+    ensure_nonzero_length(len)?;
 
     let content_limit = len - 1;
     let mut buf = Vec::with_capacity(len);
@@ -241,7 +245,7 @@ pub fn to_cstring_fixed_len(s: &str, len: usize) -> Vec<u8> {
 
     buf.resize(content_limit, b' ');
     buf.push(0);
-    buf
+    Ok(buf)
 }
 
 /// Creates a descriptor over a [`Sid`].
@@ -269,11 +273,11 @@ mod tests {
     #[test]
     fn to_u16cstring_fixed_len_matches_etw_layout() {
         assert_eq!(
-            to_u16cstring_fixed_len("hello", 3),
+            to_u16cstring_fixed_len("hello", 3).unwrap(),
             vec![b'h' as u16, b'e' as u16, 0]
         );
         assert_eq!(
-            to_u16cstring_fixed_len("hello", 10),
+            to_u16cstring_fixed_len("hello", 10).unwrap(),
             vec![
                 b'h' as u16,
                 b'e' as u16,
@@ -288,24 +292,26 @@ mod tests {
             ]
         );
         assert_eq!(
-            to_u16cstring_fixed_len("a\u{1F600}b", 3),
+            to_u16cstring_fixed_len("a\u{1F600}b", 3).unwrap(),
             vec![b'a' as u16, b' ' as u16, 0]
         );
         assert_eq!(
-            to_u16cstring_fixed_len("a\u{1F600}b", 4),
+            to_u16cstring_fixed_len("a\u{1F600}b", 4).unwrap(),
             vec![b'a' as u16, 0xD83D, 0xDE00, 0]
         );
         assert_eq!(
-            to_u16cstring_fixed_len("a\0b", 3),
+            to_u16cstring_fixed_len("a\0b", 3).unwrap(),
             vec![b'a' as u16, b' ' as u16, 0]
         );
-        assert_eq!(to_u16cstring_fixed_len("ignored", 1), vec![0]);
+        assert_eq!(to_u16cstring_fixed_len("ignored", 1).unwrap(), vec![0]);
     }
 
     #[test]
-    #[should_panic(expected = "len must include space for the NUL terminator")]
     fn to_u16cstring_fixed_len_rejects_zero_length() {
-        to_u16cstring_fixed_len("", 0);
+        assert!(matches!(
+            to_u16cstring_fixed_len("", 0),
+            Err(crate::Error::EmptyFixedLengthString)
+        ));
     }
 
     #[test]
@@ -316,18 +322,51 @@ mod tests {
 
     #[test]
     fn to_cstring_fixed_len_matches_etw_layout() {
-        assert_eq!(to_cstring_fixed_len("hello", 3), b"he\0");
-        assert_eq!(to_cstring_fixed_len("hello", 10), b"hello    \0");
-        assert_eq!(to_cstring_fixed_len("a\u{00E9}b", 3), b"a \0");
-        assert_eq!(to_cstring_fixed_len("a\u{00E9}b", 4), b"a\xC3\xA9\0");
-        assert_eq!(to_cstring_fixed_len("a\0b", 3), b"a \0");
-        assert_eq!(to_cstring_fixed_len("ignored", 1), b"\0");
+        assert_eq!(to_cstring_fixed_len("hello", 3).unwrap(), b"he\0");
+        assert_eq!(to_cstring_fixed_len("hello", 10).unwrap(), b"hello    \0");
+        assert_eq!(to_cstring_fixed_len("a\u{00E9}b", 3).unwrap(), b"a \0");
+        assert_eq!(
+            to_cstring_fixed_len("a\u{00E9}b", 4).unwrap(),
+            b"a\xC3\xA9\0"
+        );
+        assert_eq!(to_cstring_fixed_len("a\0b", 3).unwrap(), b"a \0");
+        assert_eq!(to_cstring_fixed_len("ignored", 1).unwrap(), b"\0");
     }
 
     #[test]
-    #[should_panic(expected = "len must include space for the NUL terminator")]
     fn to_cstring_fixed_len_rejects_zero_length() {
-        to_cstring_fixed_len("", 0);
+        assert!(matches!(
+            to_cstring_fixed_len("", 0),
+            Err(crate::Error::EmptyFixedLengthString)
+        ));
+    }
+
+    #[test]
+    fn string_descriptors_cover_the_whole_buffer() {
+        let utf16 = to_u16cstring("hi");
+        let descriptor = str16(&utf16).unwrap();
+        assert_eq!(descriptor.inner.Size, size_of_val(utf16.as_slice()) as u32);
+        assert_eq!(descriptor.inner.Ptr, utf16.as_ptr() as u64);
+
+        let ansi = to_cstring("hi");
+        let descriptor = str8(&ansi).unwrap();
+        assert_eq!(descriptor.inner.Size, ansi.len() as u32);
+        assert_eq!(descriptor.inner.Ptr, ansi.as_ptr() as u64);
+    }
+
+    #[test]
+    fn string_descriptors_reject_unterminated_buffers() {
+        // The generated event methods report the same error for these inputs, so callers can
+        // apply one error policy across both APIs.
+        for buf in [[b'h' as u16, b'i' as u16].as_slice(), [].as_slice()] {
+            assert!(matches!(
+                str16(buf),
+                Err(crate::Error::MissingNulTerminator)
+            ));
+        }
+        for buf in [b"hi".as_slice(), b"".as_slice()] {
+            assert!(matches!(str8(buf), Err(crate::Error::MissingNulTerminator)));
+        }
     }
 
     #[test]

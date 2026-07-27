@@ -36,7 +36,7 @@
 //! let y = to_u16cstring("hello");
 //!
 //! let descriptor = EVENT_DESCRIPTOR::default();
-//! ctx.write(&descriptor, &[scalar(&x), str16(&y)]).unwrap();
+//! ctx.write(&descriptor, &[scalar(&x), str16(&y).unwrap()]).unwrap();
 //! ```
 
 #[cfg(feature = "macro")]

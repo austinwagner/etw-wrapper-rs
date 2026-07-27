@@ -809,7 +809,7 @@ fn plan_string_value(
                 Some(quote! {
                     #runtime::field::ensure_nonzero_length(#length)?;
                 }),
-                quote!(#runtime::field::#fixed(#id, #length)),
+                quote!(#runtime::field::#fixed(#id, #length)?),
             ),
             ElementLength::FieldRef(from) => {
                 let declared = &idents[from];
@@ -817,7 +817,7 @@ fn plan_string_value(
                     Some(quote! {
                         #runtime::field::ensure_nonzero_length(#declared as usize)?;
                     }),
-                    quote!(#runtime::field::#fixed(#id, #declared as usize)),
+                    quote!(#runtime::field::#fixed(#id, #declared as usize)?),
                 )
             }
             ElementLength::Implicit => (None, quote!(#runtime::field::#plain(#id))),
@@ -844,7 +844,7 @@ fn plan_string_value(
                     Some(quote! {
                         #runtime::field::ensure_nonzero_length(#length)?;
                     }),
-                    quote!(#runtime::field::#fixed(value, #length)),
+                    quote!(#runtime::field::#fixed(value, #length)?),
                 ),
                 ElementLength::FieldRef(from) => {
                     let length = &idents[from];
@@ -852,7 +852,7 @@ fn plan_string_value(
                         Some(quote! {
                             #runtime::field::ensure_nonzero_length(#length as usize)?;
                         }),
-                        quote!(#runtime::field::#fixed(value, #length as usize)),
+                        quote!(#runtime::field::#fixed(value, #length as usize)?),
                     )
                 }
             };
@@ -1506,10 +1506,10 @@ fn gen_backing(name: &str, specs: &[FieldSpec], codegen: &CodegenContext) -> Tok
                 descs.push(quote! { #runtime::field::scalar(&#tmp) });
             }
             FieldClass::Str => {
-                descs.push(quote! { #runtime::field::str16(#arg) });
+                descs.push(quote! { #runtime::field::str16(#arg)? });
             }
             FieldClass::AnsiStr => {
-                descs.push(quote! { #runtime::field::str8(#arg) });
+                descs.push(quote! { #runtime::field::str8(#arg)? });
             }
             FieldClass::Bytes => {
                 descs.push(quote! { #runtime::field::bytes(#arg) });
