@@ -5,11 +5,12 @@ use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use crate::bindings::{
     EVENT_CONTROL_CODE_DISABLE_PROVIDER, EVENT_CONTROL_CODE_ENABLE_PROVIDER,
-    EVENT_FILTER_DESCRIPTOR, EventRegister, EventUnregister, EventWriteTransfer, REGHANDLE,
+    EVENT_FILTER_DESCRIPTOR, EventRegister, EventUnregister, EventWriteTransfer, GUID as RAW_GUID,
+    REGHANDLE,
 };
 use crate::error::win32_result;
 use crate::field::EventDataDescriptor;
-use crate::{EVENT_DATA_DESCRIPTOR, EVENT_DESCRIPTOR, GUID, Result};
+use crate::{EVENT_DATA_DESCRIPTOR, EventDescriptor, Guid, Result};
 
 /// A registered ETW provider.
 ///
@@ -24,7 +25,7 @@ impl EtwLogger {
     /// # Errors
     ///
     /// Returns [`Error::Windows`](crate::Error::Windows) if Windows cannot register the provider.
-    pub fn register(guid: &GUID) -> Result<Self> {
+    pub fn register(guid: &Guid) -> Result<Self> {
         Ok(EtwLogger {
             ctx: EtwContext::register(guid)?,
         })
@@ -44,7 +45,7 @@ impl EtwLogger {
     /// # Errors
     ///
     /// Returns [`Error::Windows`](crate::Error::Windows) if Windows rejects the event.
-    pub fn write(&self, descriptor: &EVENT_DESCRIPTOR, data: &[EventDataDescriptor]) -> Result<()> {
+    pub fn write(&self, descriptor: &EventDescriptor, data: &[EventDataDescriptor]) -> Result<()> {
         self.ctx.write(descriptor, data)
     }
 }
@@ -75,12 +76,20 @@ impl EtwContext {
     ///
     /// The context must remain in the returned [`Box`]. Moving its data would cause the ETW
     /// callback to access an invalid pointer.
-    fn register(guid: &GUID) -> Result<Box<Self>> {
+    fn register(guid: &Guid) -> Result<Box<Self>> {
         let mut ctx = Box::new(Self::new());
         let ptr = ctx.as_ref() as *const Self as *const c_void;
         let mut handle: REGHANDLE = 0;
-        // SAFETY: `ptr` points to the boxed context, which remains alive until unregistration.
-        let res = unsafe { EventRegister(guid, Some(enable_callback), ptr, &mut handle) };
+        // SAFETY: the crate-owned and generated GUIDs have the same `repr(C)` layout. `ptr` points
+        // to the boxed context, which remains alive until unregistration.
+        let res = unsafe {
+            EventRegister(
+                (guid as *const Guid).cast::<RAW_GUID>(),
+                Some(enable_callback),
+                ptr,
+                &mut handle,
+            )
+        };
         win32_result(res)?;
         ctx.registration_handle = handle;
         Ok(ctx)
@@ -100,7 +109,7 @@ impl EtwContext {
     }
 
     /// Writes a single event.
-    fn write(&self, descriptor: &EVENT_DESCRIPTOR, data: &[EventDataDescriptor]) -> Result<()> {
+    fn write(&self, descriptor: &EventDescriptor, data: &[EventDataDescriptor]) -> Result<()> {
         // SAFETY: `EventDataDescriptor` transparently wraps `EVENT_DATA_DESCRIPTOR`, and the
         // borrowed payloads outlive this call.
         let res = unsafe {
@@ -138,7 +147,7 @@ impl Drop for EtwContext {
 /// Mutates the context only through atomics to avoid undefined behavior. The callback provides no
 /// ordering guarantees, but a transient read is acceptable for the lightweight enablement check.
 unsafe extern "system" fn enable_callback(
-    _source_id: *const GUID,
+    _source_id: *const RAW_GUID,
     is_enabled: u32,
     level: u8,
     match_any_keyword: u64,

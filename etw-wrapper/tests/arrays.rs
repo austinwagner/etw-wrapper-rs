@@ -1,7 +1,7 @@
 //! Tests generated APIs and event writes for fixed- and variable-count arrays.
 
 use etw_wrapper::field::{Sid, SidBuf};
-use etw_wrapper::{FILETIME, GUID, SYSTEMTIME, gen_etw_wrapper};
+use etw_wrapper::{FileTime, Guid, SystemTime, gen_etw_wrapper};
 
 gen_etw_wrapper!("manifests/arrays.man");
 
@@ -84,10 +84,10 @@ fn emits_fixed_scalar_arrays() {
             &[1.5, 2.5],
             &[3.5, 4.5],
             &[0, 1],
-            &[GUID::from_u128(1), GUID::from_u128(2)],
+            &[Guid::from_u128(1), Guid::from_u128(2)],
             &[true, false],
-            &[FILETIME::default(), FILETIME::default()],
-            &[SYSTEMTIME::default(), SYSTEMTIME::default()],
+            &[FileTime::default(), FileTime::default()],
+            &[SystemTime::default(), SystemTime::default()],
         )
         .expect("emitting fixed scalar arrays failed");
 }

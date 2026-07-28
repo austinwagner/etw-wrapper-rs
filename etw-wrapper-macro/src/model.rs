@@ -20,7 +20,7 @@ pub struct Manifest {
 #[derive(Debug, Clone)]
 pub struct Provider {
     pub symbol: String,
-    /// The provider GUID in `GUID::from_u128` layout.
+    /// The provider GUID in `Guid::from_u128` layout.
     pub guid: u128,
     pub events: Vec<Event>,
 }

@@ -5,7 +5,7 @@ Strongly typed [Event Tracing for Windows (ETW)](https://learn.microsoft.com/en-
 Point the `gen_etw_wrapper!` macro at an ETW manifest file to emit a struct with a method for each event.
 
 ```rust
-use etw_wrapper::{gen_etw_wrapper, FILETIME};
+use etw_wrapper::{FileTime, gen_etw_wrapper};
 
 gen_etw_wrapper!("manifests/widgetservice.man", PROVIDER_WIDGETSERVICE -> WidgetLogger);
 
@@ -13,7 +13,7 @@ fn main() -> etw_wrapper::Result<()> {
     let logger = WidgetLogger::register()?;
 
     // Signatures are derived from the manifest templates.
-    logger.service_started("1.0.0", 8, FILETIME::default())?;
+    logger.service_started("1.0.0", 8, FileTime::default())?;
     logger.request_failed(0x12ABCDEF, 500, 42, "failed to succeed")?;
 
     Ok(()) // Dropping `logger` unregisters the provider.
@@ -23,7 +23,7 @@ fn main() -> etw_wrapper::Result<()> {
 > [!NOTE]
 > This crate is Windows-only. Use `#[cfg]` gates when sharing a crate with other platforms.
 
-The Windows APIs are linked directly, so there is no dependency on the `windows` crate and no version to keep in sync with the rest of your dependency tree. Types such as `GUID`, `FILETIME`, and `EVENT_DESCRIPTOR` are defined by this crate and are layout-compatible with their Win32 counterparts.
+The Windows APIs are linked directly, so there is no dependency on the `windows` crate and no version to keep in sync with the rest of your dependency tree. Types such as `Guid`, `FileTime`, and `EventDescriptor` are defined by this crate and are layout-compatible with their Win32 counterparts.
 
 ## Getting started
 
@@ -132,7 +132,7 @@ the macro generates:
 impl WidgetLogger {
     pub fn register() -> etw_wrapper::Result<Self> { /* ... */ }
 
-    pub fn service_started(&self, version: &str, worker_count: u32, start_time: FILETIME)
+    pub fn service_started(&self, version: &str, worker_count: u32, start_time: FileTime)
         -> etw_wrapper::Result<()> { /* ... */ }
 }
 ```
@@ -160,9 +160,9 @@ The macro maps manifest `inType` values to Rust parameter types as follows:
 | `win:Double`                                                | `f64`          |                                                                                  |
 | `win:Boolean`                                               | `bool`         | Encoded as a 32-bit Windows `BOOL`                                               |
 | `win:Pointer`                                               | `usize`        |                                                                                  |
-| `win:GUID`                                                  | `GUID`         |                                                                                  |
-| `win:FILETIME`                                              | `FILETIME`     |                                                                                  |
-| `win:SYSTEMTIME`                                            | `SYSTEMTIME`   |                                                                                  |
+| `win:GUID`                                                  | `Guid`         |                                                                                  |
+| `win:FILETIME`                                              | `FileTime`     |                                                                                  |
+| `win:SYSTEMTIME`                                            | `SystemTime`   |                                                                                  |
 | `win:UnicodeString`                                         | `&str`         | Interior NULs become spaces, `length="N"` or `length="Field"` produces exactly that many units including NUL |
 | `win:AnsiString`                                            | `&[u8]`        | Caller supplies provider-code-page bytes and the final NUL                       |
 | `win:AnsiString` with `outType="win:Utf8/win:Json/win:Xml"` | `&str`         | Encoded as UTF-8, interior NULs become spaces                                    |
@@ -238,20 +238,20 @@ If you prefer not to use the macro, you can use the runtime directly. `EtwLogger
 
 The `field` module provides converters for passing fields to `write`: `scalar` and `slice` for fixed-size values; `str16`, `to_u16cstring`, and `to_u16cstring_fixed_len` for UTF-16 strings; `str8` for provider-code-page byte buffers; `to_cstring` and `to_cstring_fixed_len` for explicit UTF-8 string output types; `bytes` for binary blobs; and `sid` for a `Sid`.
 
-`scalar` and `slice` accept the integer and floating-point primitives, `usize` for `win:Pointer`, and the `GUID`, `FILETIME`, and `SYSTEMTIME` types. The sealed `field::Scalar` trait prevents strings or custom types with padding from being copied into an event by mistake.
+`scalar` and `slice` accept the integer and floating-point primitives, `usize` for `win:Pointer`, and the `Guid`, `FileTime`, and `SystemTime` types. The sealed `field::Scalar` trait prevents strings or custom types with padding from being copied into an event by mistake.
 
 String helpers return `Error::MissingNulTerminator` for unterminated buffers and `Error::EmptyFixedLengthString` when a fixed length has no room for the terminator.
 
 Call `enabled()` before preparing descriptors when you want to skip work for an event the provider is not currently accepting. Pass descriptors to `write()` in the same order as the fields in the manifest template.
 
 ```rust
-use etw_wrapper::{EVENT_DESCRIPTOR, EtwLogger, GUID, field::*};
+use etw_wrapper::{EtwLogger, EventDescriptor, Guid, field::*};
 
-let ctx = EtwLogger::register(&GUID::from_u128(0x8B3A1F42_6C7D_4E9A_9F21_3D5E0A7C1B84))?;
+let ctx = EtwLogger::register(&Guid::from_u128(0x8B3A1F42_6C7D_4E9A_9F21_3D5E0A7C1B84))?;
 
-let descriptor = EVENT_DESCRIPTOR { Id: 1, Level: 4, ..Default::default() };
+let descriptor = EventDescriptor { id: 1, level: 4, ..Default::default() };
 
-if ctx.enabled(descriptor.Level, descriptor.Keyword) {
+if ctx.enabled(descriptor.level, descriptor.keyword) {
     let version = to_u16cstring("1.0.0");
     let workers = 8u32;
     ctx.write(&descriptor, &[str16(&version)?, scalar(&workers)])?;

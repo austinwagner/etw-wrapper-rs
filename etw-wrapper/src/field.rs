@@ -1,6 +1,6 @@
 //! Serialization primitives that turn typed values into [`EventDataDescriptor`] instances.
 
-use crate::{EVENT_DATA_DESCRIPTOR, FILETIME, GUID, SYSTEMTIME};
+use crate::{EVENT_DATA_DESCRIPTOR, FileTime, Guid, SystemTime};
 use std::marker;
 
 pub use safe_sid::{Sid, SidBuf};
@@ -28,7 +28,7 @@ macro_rules! impl_scalar {
 // `bool` is deliberately absent: ETW encodes win:Boolean as a 32-bit value, so generated code
 // widens it to `i32` before building a descriptor.
 impl_scalar!(
-    i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, usize, GUID, FILETIME, SYSTEMTIME,
+    i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, usize, Guid, FileTime, SystemTime,
 );
 
 #[repr(transparent)]
@@ -419,13 +419,13 @@ mod tests {
     fn scalar_covers_the_abi_struct_types() {
         // These are the only non-primitive types `Scalar` accepts, and ETW decodes each by its
         // exact ABI size, so a descriptor must span the whole value.
-        let guid = GUID::from_u128(0);
+        let guid = Guid::from_u128(0);
         assert_eq!(scalar(&guid).inner.Size, 16);
 
-        let filetime = FILETIME::default();
+        let filetime = FileTime::default();
         assert_eq!(scalar(&filetime).inner.Size, 8);
 
-        let systemtime = SYSTEMTIME::default();
+        let systemtime = SystemTime::default();
         assert_eq!(scalar(&systemtime).inner.Size, 16);
     }
 

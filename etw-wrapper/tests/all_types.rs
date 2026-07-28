@@ -1,7 +1,7 @@
 //! Tests macro support for all input types.
 
 use etw_wrapper::field::SidBuf;
-use etw_wrapper::{FILETIME, GUID, SYSTEMTIME, gen_etw_wrapper};
+use etw_wrapper::{FileTime, Guid, SystemTime, gen_etw_wrapper};
 
 gen_etw_wrapper!("manifests/all-types.man");
 
@@ -9,12 +9,12 @@ gen_etw_wrapper!("manifests/all-types.man");
 fn registers_and_emits_all_types() {
     let logger = ProviderAllTypesLogger::register().expect("provider registration failed");
 
-    let guid = GUID::from_u128(0);
-    let filetime = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
+    let guid = Guid::from_u128(0);
+    let filetime = FileTime {
+        low_date_time: 0,
+        high_date_time: 0,
     };
-    let systemtime = SYSTEMTIME::default();
+    let systemtime = SystemTime::default();
     let ansi: &[u8] = b"ansi\0";
     let binary: &[u8; 16] = b"0123456789abcdef";
     let sid = SidBuf::new([0, 0, 0, 0, 0, 1], &[0]).unwrap();

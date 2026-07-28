@@ -7,16 +7,16 @@ const FILTER: &[&str] = &[
     "EventUnregister",
     "EventWriteTransfer",
     "EVENT_DATA_DESCRIPTOR",
-    "EVENT_DESCRIPTOR",
     "EVENT_FILTER_DESCRIPTOR",
     "EVENT_CONTROL_CODE_ENABLE_PROVIDER",
     "EVENT_CONTROL_CODE_DISABLE_PROVIDER",
     "EVENT_DATA_DESCRIPTOR_TYPE_NONE",
-    "FILETIME",
-    "SYSTEMTIME",
     "ERROR_INVALID_DATA",
     "ERROR_ARITHMETIC_OVERFLOW",
 ];
+
+/// Public ABI types supplied by the runtime crate instead of generated here.
+const REFERENCES: &[&str] = &["crate,flat,Windows.Win32.System.Diagnostics.Etw.EVENT_DESCRIPTOR"];
 
 fn main() {
     let mut args = std::env::args();
@@ -64,8 +64,11 @@ fn regenerate_bindings() {
         "--sys",
         "--no-deps",
         "--no-allow",
-        "--filter",
     ];
+    for reference in REFERENCES {
+        args.extend_from_slice(&["--reference", reference]);
+    }
+    args.push("--filter");
     args.extend_from_slice(FILTER);
     windows_bindgen::bindgen(args).unwrap();
 

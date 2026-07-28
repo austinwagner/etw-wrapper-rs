@@ -4,8 +4,8 @@
 
 ### Changed
 
-* Replaced the `windows` dependency with direct ETW links, crate-owned Win32 ABI types, and a
-  crate-specific `Error` type.
+* Replaced the `windows` dependency with direct ETW links, crate-owned `Guid`, `FileTime`,
+  `SystemTime`, and `EventDescriptor` ABI types, and a crate-specific `Error` type.
 * Updated `safe-sid` to `v1.0.0`.
 * Changed manual string helpers to return validation errors instead of panicking.
 * Restricted `scalar` and `slice` to the sealed `Scalar` types ETW can serialize safely.

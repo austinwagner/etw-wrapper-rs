@@ -2,7 +2,7 @@
 
 windows_link::link!("advapi32.dll" "system" fn EventRegister(providerid : *const GUID, enablecallback : PENABLECALLBACK, callbackcontext : *const core::ffi::c_void, reghandle : *mut REGHANDLE) -> u32);
 windows_link::link!("advapi32.dll" "system" fn EventUnregister(reghandle : REGHANDLE) -> u32);
-windows_link::link!("advapi32.dll" "system" fn EventWriteTransfer(reghandle : REGHANDLE, eventdescriptor : *const EVENT_DESCRIPTOR, activityid : *const GUID, relatedactivityid : *const GUID, userdatacount : u32, userdata : *const EVENT_DATA_DESCRIPTOR) -> u32);
+windows_link::link!("advapi32.dll" "system" fn EventWriteTransfer(reghandle : REGHANDLE, eventdescriptor : *const crate:: EVENT_DESCRIPTOR, activityid : *const GUID, relatedactivityid : *const GUID, userdatacount : u32, userdata : *const EVENT_DATA_DESCRIPTOR) -> u32);
 pub type ENABLECALLBACK_ENABLED_STATE = u32;
 pub const ERROR_ARITHMETIC_OVERFLOW: WIN32_ERROR = 534u32;
 pub const ERROR_INVALID_DATA: WIN32_ERROR = 13u32;
@@ -41,27 +41,10 @@ pub struct EVENT_DATA_DESCRIPTOR_0_0 {
 pub const EVENT_DATA_DESCRIPTOR_TYPE_NONE: u32 = 0u32;
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-pub struct EVENT_DESCRIPTOR {
-    pub Id: u16,
-    pub Version: u8,
-    pub Channel: u8,
-    pub Level: u8,
-    pub Opcode: u8,
-    pub Task: u16,
-    pub Keyword: u64,
-}
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
 pub struct EVENT_FILTER_DESCRIPTOR {
     pub Ptr: u64,
     pub Size: u32,
     pub Type: u32,
-}
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct FILETIME {
-    pub dwLowDateTime: u32,
-    pub dwHighDateTime: u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -93,16 +76,4 @@ pub type PENABLECALLBACK = Option<
     ),
 >;
 pub type REGHANDLE = i64;
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct SYSTEMTIME {
-    pub wYear: u16,
-    pub wMonth: u16,
-    pub wDayOfWeek: u16,
-    pub wDay: u16,
-    pub wHour: u16,
-    pub wMinute: u16,
-    pub wSecond: u16,
-    pub wMilliseconds: u16,
-}
 pub type WIN32_ERROR = u32;

@@ -31,12 +31,12 @@
 //! [`field`] module.
 //!
 //! ```no_run
-//! use etw_wrapper::{EVENT_DESCRIPTOR, EtwLogger, GUID, field::*};
-//! let ctx = EtwLogger::register(&GUID::default()).unwrap();
+//! use etw_wrapper::{EtwLogger, EventDescriptor, Guid, field::*};
+//! let ctx = EtwLogger::register(&Guid::default()).unwrap();
 //! let x = 1u32;
 //! let y = to_u16cstring("hello");
 //!
-//! let descriptor = EVENT_DESCRIPTOR::default();
+//! let descriptor = EventDescriptor::default();
 //! ctx.write(&descriptor, &[scalar(&x), str16(&y).unwrap()]).unwrap();
 //! ```
 
@@ -59,16 +59,19 @@ mod types;
 pub use context::EtwLogger;
 pub use error::{Error, Result};
 
-// These generated types belong to this crate, so callers are not tied to a `windows` crate
-// version.
+// These crate-owned types keep callers independent of any `windows` crate version.
 /// Describes an ETW event's identity and filtering metadata.
-pub use types::EVENT_DESCRIPTOR;
+pub use types::EventDescriptor;
 /// A Windows file time represented as 100-nanosecond intervals since January 1, 1601 UTC.
-pub use types::FILETIME;
+pub use types::FileTime;
 /// A Windows globally unique identifier.
-pub use types::GUID;
+pub use types::Guid;
 /// A Windows date and time with millisecond precision.
-pub use types::SYSTEMTIME;
+pub use types::SystemTime;
+
+// `windows-bindgen` uses this referenced Win32 name in the private declarations it generates.
+#[allow(non_camel_case_types)]
+pub(crate) type EVENT_DESCRIPTOR = EventDescriptor;
 
 // Callers build payloads with `field::EventDataDescriptor`, which borrows the data it points at.
 // The raw type stays internal because its union field type is not nameable outside this crate.

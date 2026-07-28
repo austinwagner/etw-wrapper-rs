@@ -3,7 +3,7 @@
 //! This example does not build or register the message and metadata tables, so the capture file
 //! only indicates that the events were emitted.
 
-use etw_wrapper::{FILETIME, gen_etw_wrapper};
+use etw_wrapper::{FileTime, gen_etw_wrapper};
 
 // Manifest paths are relative to this crate's manifest directory. This override names the
 // generated provider `WidgetLogger` instead of `ProviderWidgetserviceLogger`.
@@ -19,9 +19,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     std::io::stdin().read_line(&mut String::new())?;
 
-    let start_time = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
+    let start_time = FileTime {
+        low_date_time: 0,
+        high_date_time: 0,
     };
     provider.service_started("1.0.0", 8, start_time)?;
     provider.request_failed(0x12ABCDEF, 500, 42, "failed to succeed")?;

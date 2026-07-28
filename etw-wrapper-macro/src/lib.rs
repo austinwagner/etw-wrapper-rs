@@ -320,7 +320,7 @@ impl Parse for WrapperArgs {
 /// invocation can be used as follows:
 ///
 /// ```ignore
-/// use etw_wrapper::{FILETIME, gen_etw_wrapper};
+/// use etw_wrapper::{FileTime, gen_etw_wrapper};
 ///
 /// gen_etw_wrapper!(
 ///     "manifests/widgetservice.man",
@@ -329,7 +329,7 @@ impl Parse for WrapperArgs {
 ///
 /// fn emit() -> etw_wrapper::Result<()> {
 ///     let logger = WidgetLogger::register()?;
-///     logger.service_started("1.0.0", 8, FILETIME::default())
+///     logger.service_started("1.0.0", 8, FileTime::default())
 /// }
 /// ```
 ///
@@ -485,7 +485,7 @@ fn gen_provider(
             ///
             /// Returns an error if Windows cannot register the provider.
             pub fn register() -> #runtime::Result<Self> {
-                let guid = #runtime::GUID::from_u128(#guid);
+                let guid = #runtime::Guid::from_u128(#guid);
                 let ctx = #runtime::EtwLogger::register(&guid)?;
                 #runtime::Result::Ok(Self { ctx })
             }
@@ -1412,15 +1412,15 @@ fn gen_event_method(
         }
 
         let __outcome: ::core::result::Result<(), __EtwEventError> = (|| {
-            const DESC: #runtime::EVENT_DESCRIPTOR =
-                #runtime::EVENT_DESCRIPTOR {
-                    Id: #id,
-                    Version: #version,
-                    Channel: #channel,
-                    Level: #level,
-                    Opcode: #opcode,
-                    Task: #task,
-                    Keyword: #keyword,
+            const DESC: #runtime::EventDescriptor =
+                #runtime::EventDescriptor {
+                    id: #id,
+                    version: #version,
+                    channel: #channel,
+                    level: #level,
+                    opcode: #opcode,
+                    task: #task,
+                    keyword: #keyword,
                 };
             if !self.ctx.enabled(#level, #keyword) {
                 return ::core::result::Result::Ok(());
@@ -1572,7 +1572,7 @@ fn gen_backing(name: &str, specs: &[FieldSpec], codegen: &CodegenContext) -> Tok
         #[allow(clippy::too_many_arguments)]
         fn #name(
             &self,
-            desc: &#runtime::EVENT_DESCRIPTOR,
+            desc: &#runtime::EventDescriptor,
             #(#params),*
         ) -> #runtime::Result<()> {
             #(#temps)*
@@ -1624,12 +1624,12 @@ fn scalar_info(
         WinType::UInt32 | WinType::HexInt32 => ("q", "Q", quote!(u32)),
         WinType::Int64 => ("i", "I", quote!(i64)),
         WinType::UInt64 | WinType::HexInt64 => ("x", "X", quote!(u64)),
-        WinType::FileTime => ("m", "M", quote!(#runtime::FILETIME)),
+        WinType::FileTime => ("m", "M", quote!(#runtime::FileTime)),
         WinType::Float => ("f", "F", quote!(f32)),
         WinType::Double => ("g", "G", quote!(f64)),
         WinType::Pointer => ("p", "P", quote!(usize)),
-        WinType::Guid => ("j", "J", quote!(#runtime::GUID)),
-        WinType::SystemTime => ("y", "Y", quote!(#runtime::SYSTEMTIME)),
+        WinType::Guid => ("j", "J", quote!(#runtime::Guid)),
+        WinType::SystemTime => ("y", "Y", quote!(#runtime::SystemTime)),
         _ => return None,
     })
 }
