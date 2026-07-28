@@ -25,7 +25,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "etw-wrapper"
-version = "0.2.1"
+version = "1.0.0"
 dependencies = [
  "etw-wrapper-macro",
  "safe-sid",
@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "etw-wrapper-macro"
-version = "0.2.1"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "convert_case",

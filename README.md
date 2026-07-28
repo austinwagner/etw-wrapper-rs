@@ -31,14 +31,14 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-etw-wrapper = "0.2.1"
+etw-wrapper = "1.0.0"
 ```
 
 The `gen_etw_wrapper!` macro is available by default through the `macro` feature. If you only want the runtime pieces, disable default features:
 
 ```toml
 [dependencies]
-etw-wrapper = { version = "0.2.1", default-features = false }
+etw-wrapper = { version = "1.0.0", default-features = false }
 ```
 
 See [Manual API](#manual-api) for instructions on using the runtime helpers directly.

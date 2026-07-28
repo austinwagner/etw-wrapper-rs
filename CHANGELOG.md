@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.0.0] - 2026-07-27
 
 ### Added
 
@@ -69,7 +69,8 @@
 
 * Initial release.
 
-[Unreleased]: https://github.com/austinwagner/etw-wrapper-rs/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/austinwagner/etw-wrapper-rs/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/austinwagner/etw-wrapper-rs/compare/v0.2.1...v1.0.0
 [0.2.1]: https://github.com/austinwagner/etw-wrapper-rs/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/austinwagner/etw-wrapper-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/austinwagner/etw-wrapper-rs/releases/tag/v0.1.0
