@@ -9,6 +9,7 @@
 * Added the sealed `field::Scalar` trait for fixed-size values that ETW can serialize safely.
 * Added macro-expansion validation for duplicate provider name overrides and constant zero-length
   string fields.
+* Included the ISC license text in the published packages.
 
 ### Changed
 
